@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "academic-research-skills-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode V2 thin adapter for the Academic Research Skills (ARS) plugin",
+  "license": "CC-BY-NC-4.0",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/catalog.test.ts tests/guard.test.ts tests/models.test.ts tests/setup.test.ts tests/screening.test.ts tests/screening-fixture.test.ts tests/compatibility.test.ts tests/runtime.test.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "typescript": "^5.9.3"
+  }
+}
