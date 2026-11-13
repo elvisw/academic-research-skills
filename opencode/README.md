@@ -1,5 +1,7 @@
 # ARS OpenCode V2 adapter
 
+> [简体中文](README.zh-CN.md)
+
 A thin adapter that makes the Academic Research Skills (ARS) plugin usable in
 OpenCode V2 **without copying or editing the ARS core**. The Claude Code files
 stay the source of truth; this package only translates host contracts at
