@@ -69,6 +69,12 @@ export interface HostSnapshot {
   skills: readonly { id: string; content?: string }[];
   commands: readonly { name: string; description?: string }[];
   models: readonly ModelInfoLike[];
+  /**
+   * Set when `model.list()` failed. `models` is then an empty placeholder, not
+   * an authoritative "this host offers nothing" answer, so callers must block
+   * availability checks instead of reporting unoffered mappings.
+   */
+  modelsUnavailable?: string;
   capabilities: {
     skillTransform: boolean;
     commandTransform: boolean;

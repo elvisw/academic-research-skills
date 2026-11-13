@@ -926,6 +926,47 @@ test("V01 persisted model mappings survive update and check without --models", a
   }
 });
 
+test("the screening check does not claim alias defaults when no aliases exist", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+
+    const withoutAliases = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const blocked = withoutAliases.checks.find(
+      (item) => item.id === "screening-models",
+    );
+    assert.equal(blocked?.status, "warn");
+    assert.match(
+      blocked?.detail ?? "",
+      /stay blocked until models\.aliases\.\* are configured/,
+    );
+    assert.doesNotMatch(blocked?.detail ?? "", /tier defaults/);
+
+    const withAliases = await runInstaller(
+      request(fixture, {
+        action: "update",
+        channel: "plugin",
+        scope: "project",
+        apply: true,
+        models: { aliases: { sonnet: { providerID: "probe", model: "balanced" } } },
+      }),
+    );
+    assert.equal(withAliases.ok, true, withAliases.blockers.join("\n"));
+    const resolved = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const detail =
+      resolved.checks.find((item) => item.id === "screening-models")?.detail ?? "";
+    assert.match(detail, /tier defaults/);
+    assert.doesNotMatch(detail, /stay blocked/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("V02 a retained agent stays retained across repeated updates", async () => {
   const fixture = makeFixture();
   try {

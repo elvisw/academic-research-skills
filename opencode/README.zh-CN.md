@@ -93,10 +93,10 @@ ARS 源文件里会出现 `sonnet`、`opus` 这样的 Claude 模型名。你**�
 | 源端提示 | 按什么理解 | 说明 |
 |---|---|---|
 | `sonnet` | **中端 / 均衡** | 12 个 `/ars-*` 命令声明它；映射到你 provider 的中端模型 |
-| `opus` | **高端 / 最强** | 当前命令没有声明；只有你新增声明 `opus` 的自定义命令或代理时才需要 |
-| `haiku` | **低端 / 快速、低成本** | 当前命令没有声明；只有你新增声明 `haiku` 的自定义命令或代理时才需要 |
+| `opus` | **高端 / 最强** | 当前命令没有声明；只有你新增声明 `opus` 的自定义命令或代理时才需要，另外也是默认的 `ADJ`/`FTADJ` 筛选档位 |
+| `haiku` | **低端 / 快速、低成本** | 当前命令没有声明；只有你新增声明 `haiku` 的自定义命令或代理时才需要，另外也是默认的 `QC` 筛选档位 |
 
-代理覆盖（`models.agents.<id>`）和筛选角色（`screening.roles.<role>`）填写的是**直连模型引用**，不会读取这些别名。
+代理覆盖（`models.agents.<id>`）和显式配置的 `screening.roles.<role>` 填写的是**直连模型引用**。没有显式配置的筛选角色会读取这些别名：源端默认的 `sonnet` 会按角色解析为 `sonnet`（`A`/`B`/`FTA`/`FTB`）、`opus`（`ADJ`/`FTADJ`）和 `haiku`（`QC`）；缺失的档位会回退到 `models.aliases.sonnet` 并给出警告。
 
 这 12 个声明 `sonnet` 的命令里有 3 个是 CLI 包装命令（`ars-cache-invalidate`、`ars-mark-read`、`ars-unmark-read`），它们不经过模型路由。
 
@@ -152,9 +152,9 @@ C:\research\ars-models.json
 说明：
 
 - 16 个 ARS 命令中有 **12 个**声明了 `sonnet`，所以 `sonnet` 至少要映射；剩下 4 个继承当前会话模型。
-- `opus` 和 `haiku` 是可选档位，示例里先列出来方便你看到三档的写法。如果暂时不用，可以删掉对应条目；保留就必须填真实模型，不能留着 `your-strongest-model` 这样的占位符。
+- `opus` 和 `haiku` 是筛选档位默认会用的档位（`ADJ`/`FTADJ` 和 `QC`）；不配时这些角色会回退到 `models.aliases.sonnet` 并给出警告。示例先列出来方便你看到三档的写法；如果暂时不用，可以删掉对应条目，保留就必须填真实模型，不能留着 `your-strongest-model` 这样的占位符。
 - 如果你自己新增了声明 `opus` 或 `haiku` 的命令或代理，再补对应档位。
-- 使用 `sr-screener` 筛选时，如果生成的筛选配置为某个角色指定了模型，就需要配置该角色；没有指定时使用 reviewer 的生效模型（默认继承会话模型）。各档位建议、格式和路由规则见[中文模型文档](docs/models.zh-CN.md)。
+- 使用 `sr-screener` 筛选时，源端默认的 `sonnet` 会按角色解析到对应档位（`ADJ`/`FTADJ` 用 `opus`，`QC` 用 `haiku`，其余用 `sonnet`）；缺失的档位回退到 `models.aliases.sonnet` 并给出警告。生成的条目没有为角色指定模型时，reviewer 继承会话模型。档位格式、`screening.roles` 覆盖和路由规则见[中文模型文档](docs/models.zh-CN.md)。
 - 模型映射文件只写 provider/model，不要写 API key。
 
 ---

@@ -96,13 +96,13 @@ def main() -> int:
     config = {
         "review_title": "adapter fixture",
         "models": {
-            "A": "fixture-model",
-            "B": "fixture-model",
-            "ADJ": "fixture-model",
-            "QC": "fixture-model",
-            "FTA": "fixture-model",
-            "FTB": "fixture-model",
-            "FTADJ": "fixture-model",
+            "A": "sonnet",
+            "B": "sonnet",
+            "ADJ": "sonnet",
+            "QC": "sonnet",
+            "FTA": "sonnet",
+            "FTB": "sonnet",
+            "FTADJ": "sonnet",
         },
     }
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")

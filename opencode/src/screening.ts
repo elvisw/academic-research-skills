@@ -27,6 +27,12 @@ export interface ScreeningIndexEntry {
   context: ScreeningContext;
   prompt_file: string;
   model?: string;
+  /** Set by planning; absent means the reviewer inherits the session model. */
+  resolvedModel?: ModelRef;
+  /** Config key that selected `resolvedModel`, or `inherit`. */
+  resolvedBy?: string;
+  /** Why planning refused a model for this entry; dispatch stays blocked. */
+  modelBlocked?: string;
 }
 
 export interface ScreeningDecision {
@@ -71,7 +77,6 @@ export interface ScreeningRunOptions {
   port: ScreeningPort;
   /** Cost approval must be explicit; a plan object is not consent. */
   approve: boolean;
-  roleModels?: Record<string, ModelRef>;
   availableModels?: readonly { providerID: string; id: string }[];
   onProgress?: (message: string) => void;
 }
@@ -175,6 +180,116 @@ function resolveEmittedPromptPath(
 }
 
 /**
+ * The unchanged emitter writes `model: sonnet` for every role
+ * (`srlib.py:374-375`). That single source default is the only value this
+ * adapter rewrites into tiers; any other source model keeps its own name, so a
+ * `quality` profile (`opus`) is never tier-overridden.
+ */
+const SOURCE_DEFAULT_MODEL = "sonnet";
+
+/** Role -> tier, applied only to the source default model. */
+const SONNET_ROLE_TIER: Record<string, string> = {
+  A: "sonnet",
+  B: "sonnet",
+  FTA: "sonnet",
+  FTB: "sonnet",
+  ADJ: "opus",
+  FTADJ: "opus",
+  QC: "haiku",
+};
+
+interface RoleResolution {
+  ref?: ModelRef;
+  /** Config key that supplied the ref, or `inherit`. */
+  via: string;
+  /** Set when planning must block instead of choosing a model. */
+  problem?: string;
+  /** Set when a fallback was used; shown in the approval text. */
+  warning?: string;
+}
+
+function isOffered(
+  ref: ModelRef,
+  availableModels: readonly { providerID: string; id: string }[] | undefined,
+): boolean {
+  return (
+    !availableModels ||
+    availableModels.some(
+      (model) => model.providerID === ref.providerID && model.id === ref.model,
+    )
+  );
+}
+
+/**
+ * Resolve one role once, in planning order:
+ * explicit `screening.roles` -> tier alias (source default `sonnet` only)
+ * -> `models.aliases.sonnet` with a warning -> block.
+ *
+ * A present-but-unoffered alias always blocks; there is no second fallback.
+ */
+function resolveRoleModel(options: {
+  role: string;
+  sourceModel: string;
+  aliases?: Record<string, ModelRef>;
+  roleModels?: Record<string, ModelRef>;
+  availableModels?: readonly { providerID: string; id: string }[];
+}): RoleResolution {
+  const { role, sourceModel, aliases, roleModels, availableModels } = options;
+
+  const explicit = roleModels?.[role];
+  if (explicit) {
+    const via = `screening.roles.${role}`;
+    return isOffered(explicit, availableModels)
+      ? { ref: explicit, via }
+      : {
+          via,
+          problem: `${role} -> ${explicit.providerID}/${explicit.model} (explicit ${via}, not offered by this host)`,
+        };
+  }
+
+  const tier =
+    sourceModel === SOURCE_DEFAULT_MODEL ? SONNET_ROLE_TIER[role] : undefined;
+  const aliasKey = tier ?? sourceModel;
+  const mapped = aliases?.[aliasKey];
+  if (mapped) {
+    const via = `models.aliases.${aliasKey}`;
+    return isOffered(mapped, availableModels)
+      ? { ref: mapped, via }
+      : {
+          via,
+          problem: `${role} -> ${mapped.providerID}/${mapped.model} (${via}, not offered by this host)`,
+        };
+  }
+
+  // A missing tier alias may fall back to the source default, but a present and
+  // unoffered one above never does.
+  if (tier && tier !== SOURCE_DEFAULT_MODEL) {
+    const fallback = aliases?.[SOURCE_DEFAULT_MODEL];
+    if (fallback) {
+      return isOffered(fallback, availableModels)
+        ? {
+            ref: fallback,
+            via: `models.aliases.${SOURCE_DEFAULT_MODEL} (fallback for ${tier})`,
+            warning: `role ${role}: models.aliases.${tier} is not configured; using models.aliases.${SOURCE_DEFAULT_MODEL}`,
+          }
+        : {
+            via: `models.aliases.${tier}`,
+            problem: `${role} -> ${fallback.providerID}/${fallback.model} (fallback models.aliases.${SOURCE_DEFAULT_MODEL} for missing ${tier}, not offered by this host)`,
+          };
+    }
+    return {
+      via: `models.aliases.${tier}`,
+      problem: `${role} (${sourceModel}): no models.aliases.${tier} and no models.aliases.${SOURCE_DEFAULT_MODEL} fallback`,
+    };
+  }
+
+  return {
+    via: `models.aliases.${aliasKey}`,
+    problem: `${role} (${sourceModel}): no models.aliases.${aliasKey}`,
+  };
+}
+
+/**
  * Build a dispatch plan and validate every prerequisite the source checks at
  * build time: context binding, prompt files, batch/PDF access, role models.
  */
@@ -182,6 +297,9 @@ export function planScreening(options: {
   stage: "ta" | "ft";
   workDir: string;
   emitDir: string;
+  /** `models.aliases`: tier keys plus any non-default source model name. */
+  aliases?: Record<string, ModelRef>;
+  /** Explicit `screening.roles`; every role here wins over tier resolution. */
   roleModels?: Record<string, ModelRef>;
   availableModels?: readonly { providerID: string; id: string }[];
 }): ScreeningPlan {
@@ -198,6 +316,9 @@ export function planScreening(options: {
   const roleCounts: Record<string, number> = {};
   const contexts = new Set<string>();
   const roles = options.stage === "ta" ? TA_ROLES : FT_ROLES;
+  // Resolve each emitted role once: one warning and one block per role, not
+  // once per batch that shares it.
+  const resolutions = new Map<string, RoleResolution>();
 
   for (const entry of entries) {
     const split = splitLabel(entry.label);
@@ -220,6 +341,35 @@ export function planScreening(options: {
     }
     roleCounts[role] = (roleCounts[role] ?? 0) + 1;
 
+    // Model resolution is independent of file access, so the approval text can
+    // name every role even when a batch or PDF is missing.
+    const sourceModel = entry.model?.trim();
+    if (sourceModel) {
+      const cacheKey = `${role}\u0000${sourceModel}`;
+      let resolution = resolutions.get(cacheKey);
+      if (!resolution) {
+        resolution = resolveRoleModel({
+          role,
+          sourceModel,
+          aliases: options.aliases,
+          roleModels: options.roleModels,
+          availableModels: options.availableModels,
+        });
+        resolutions.set(cacheKey, resolution);
+        if (resolution.warning) warnings.push(resolution.warning);
+      }
+      if (resolution.ref) {
+        entry.resolvedModel = resolution.ref;
+        entry.resolvedBy = resolution.via;
+      }
+      if (resolution.problem) {
+        entry.modelBlocked = resolution.problem;
+        missingModels.push(resolution.problem);
+      }
+    } else {
+      entry.resolvedBy = "inherit";
+    }
+
     if (!existsSync(entry.prompt_file)) {
       missingFiles.push(entry.prompt_file);
       continue;
@@ -239,24 +389,6 @@ export function planScreening(options: {
         unreadablePdfs.push(`${entry.label}: prompt names no PDF`);
       } else if (!checkPdf(pdf)) {
         unreadablePdfs.push(pdf);
-      }
-    }
-
-    const roleModel = options.roleModels?.[role];
-    if (entry.model) {
-      if (!roleModel) {
-        missingModels.push(`${role} (${entry.model})`);
-      } else if (
-        options.availableModels &&
-        !options.availableModels.some(
-          (model) =>
-            model.providerID === roleModel.providerID &&
-            model.id === roleModel.model,
-        )
-      ) {
-        missingModels.push(
-          `${role} -> ${roleModel.providerID}/${roleModel.model} (not offered by this host)`,
-        );
       }
     }
   }
@@ -302,6 +434,44 @@ export function planScreening(options: {
   };
 }
 
+const ROLE_ORDER: Record<"ta" | "ft", readonly string[]> = {
+  ta: TA_ROLES,
+  ft: FT_ROLES,
+};
+
+/**
+ * One line per role in stage order: the exact ref dispatch will apply, the
+ * config key that selected it, or `inherit`. This is the approval contract.
+ */
+function describeRoleModels(plan: ScreeningPlan): string[] {
+  const byRole = new Map<string, string[]>();
+  for (const entry of plan.entries) {
+    const role = roleOf(entry.label);
+    if (!role) continue;
+    const target = entry.resolvedModel
+      ? `${entry.resolvedModel.providerID}/${entry.resolvedModel.model} (${entry.resolvedBy ?? "planned"})`
+      : entry.modelBlocked
+        ? "blocked"
+        : "inherit";
+    const targets = byRole.get(role) ?? [];
+    if (!targets.includes(target)) targets.push(target);
+    byRole.set(role, targets);
+  }
+  const order = [
+    ...ROLE_ORDER[plan.stage],
+    ...[...byRole.keys()].filter(
+      (role) => !ROLE_ORDER[plan.stage].includes(role),
+    ),
+  ];
+  const lines: string[] = [];
+  for (const role of order) {
+    const targets = byRole.get(role);
+    if (!targets?.length) continue;
+    lines.push(`  ${role} -> ${targets.join(", ")}`);
+  }
+  return lines;
+}
+
 export function describePlan(plan: ScreeningPlan): string {
   const roles = Object.entries(plan.roleCounts)
     .map(([role, count]) => `${role}=${count}`)
@@ -310,6 +480,10 @@ export function describePlan(plan: ScreeningPlan): string {
     `ARS screening dispatch (${plan.stage})`,
     `context: ${plan.contextID ?? "unknown"}`,
     `calls: ${plan.calls} (at most ${plan.maxCalls} with one missing-item retry per call) (${roles || "none"})`,
+  ];
+  const roleModels = describeRoleModels(plan);
+  if (roleModels.length) lines.push("role models:", ...roleModels);
+  lines.push(
     plan.missingModels.length
       ? `blocked models: ${plan.missingModels.join("; ")}`
       : "models: mapped",
@@ -319,7 +493,7 @@ export function describePlan(plan: ScreeningPlan): string {
     plan.unreadablePdfs.length
       ? `unreadable PDFs: ${plan.unreadablePdfs.length}`
       : "PDFs: present",
-  ];
+  );
   for (const warning of plan.warnings) lines.push(`warning: ${warning}`);
   return lines.join("\n");
 }
@@ -557,42 +731,36 @@ export async function runScreening(
       sessions.push(sessionID);
       await port.switchAgent(sessionID, bareReviewerAgentType(SCREENING_AGENT));
 
-      // Apply and verify the role model before any prompt is admitted.
-      if (entry.model) {
-        const roleModel = options.roleModels?.[role];
-        if (!roleModel) {
+      // Apply the ref planning stored and verify it before any prompt is
+      // admitted. The plan is the only model source; nothing is resolved here.
+      if (entry.model?.trim()) {
+        const planned = entry.resolvedModel;
+        if (!planned) {
           throw new Error(
-            `no OpenCode model mapping for screening role ${role}; the call was not dispatched`,
+            `screening role ${role} has no planned model (${entry.resolvedBy ?? "unresolved"}); regenerate the plan before dispatching`,
           );
         }
-        if (
-          options.availableModels &&
-          !options.availableModels.some(
-            (model) =>
-              model.providerID === roleModel.providerID &&
-              model.id === roleModel.model,
-          )
-        ) {
+        if (!isOffered(planned, options.availableModels)) {
           throw new Error(
-            `screening role ${role} maps to ${roleModel.providerID}/${roleModel.model}, which this host does not offer; the call was not dispatched`,
+            `screening role ${role} maps to ${planned.providerID}/${planned.model}, which this host does not offer; the call was not dispatched`,
           );
         }
-        await port.switchModel(sessionID, roleModel);
+        await port.switchModel(sessionID, planned);
         const applied = await port.sessionModel(sessionID);
         if (
           !applied ||
-          applied.providerID !== roleModel.providerID ||
-          applied.id !== roleModel.model
+          applied.providerID !== planned.providerID ||
+          applied.id !== planned.model
         ) {
           throw new Error(
-            `screening role ${role} could not be routed: expected ${roleModel.providerID}/${roleModel.model}, effective ${applied ? `${applied.providerID}/${applied.id}` : "none"}; the call was not dispatched`,
+            `screening role ${role} could not be routed: expected ${planned.providerID}/${planned.model}, effective ${applied ? `${applied.providerID}/${applied.id}` : "none"}; the call was not dispatched`,
           );
         }
         routes.push({
           label: entry.label,
           role,
-          requested: entry.model,
-          effective: `${roleModel.providerID}/${roleModel.model}`,
+          requested: entry.model ?? "planned",
+          effective: `${planned.providerID}/${planned.model}`,
           sessionID,
         });
       } else {

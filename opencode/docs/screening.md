@@ -13,10 +13,14 @@ Then call `ars_screening` with `{ "stage": "ta", "work": "W", "emit": "W/prompts
 preview and dispatches nothing; set it only after the user has approved that
 preview. The adapter:
 
-1. validates `label@context_id`, batch files or PDFs, and the seven role models;
-   it also re-verifies the installed `screening-reviewer-agent` system, mode,
-   permissions and model at the dispatch boundary, and blocks before any child
-   session or cost prompt if that contract differs;
+1. validates `label@context_id`, batch files or PDFs, and resolves each role's
+   model once — explicit `screening.roles`, else the tier alias for the source
+   `sonnet` default, else `models.aliases.sonnet` with a warning; anything else
+   blocks and names the role. The approval text lists the ref planned for every
+   role, or `inherit`. It also re-verifies the installed
+   `screening-reviewer-agent` system, mode, permissions and model at the
+   dispatch boundary, and blocks before any child session or cost prompt if that
+   contract differs;
 2. warns when the emitted prompts are bound to a stale context (a profile change
    archives earlier decisions);
 3. asks the host to evaluate `edit` on the results file and its `.audit.json`
@@ -36,8 +40,8 @@ preview. The adapter:
    }
    ```
 5. dispatches each prompt into its own fresh `screening-reviewer-agent` session
-   (no peer outputs are visible), applies the configured role model, and reads
-   the effective model back before prompting;
+   (no peer outputs are visible), applies the model the plan stored for that
+   role, and reads the effective model back before prompting;
 6. applies the source decision checks (`d`/`code` agreement, expected IDs,
    duplicates), retries once for missing IDs, and leaves anything still missing
    pending — never filled in by default. A retry failure keeps decisions already

@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  describePlan,
   parseExpectedIds,
   planScreening,
   roleOf,
@@ -25,12 +26,15 @@ import type { ModelRef } from "../src/setup.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 const ROLE_MODEL: ModelRef = { providerID: "fixture", model: "model" };
-const ROLE_MODELS = Object.fromEntries(
-  ["A", "B", "ADJ", "QC", "FTA", "FTB", "FTADJ"].map((role) => [
-    role,
-    ROLE_MODEL,
-  ]),
-);
+/**
+ * Alias-only configuration. The real export names `sonnet` for every role, so
+ * `models.aliases` alone must resolve all seven roles.
+ */
+const ALIASES: Record<string, ModelRef> = {
+  sonnet: ROLE_MODEL,
+  opus: ROLE_MODEL,
+  haiku: ROLE_MODEL,
+};
 const AVAILABLE = [{ providerID: "fixture", id: "model" }];
 
 interface Fixture {
@@ -162,7 +166,7 @@ test("a relative production export resolves prompts from a foreign cwd", async (
         stage,
         workDir: fixture.work,
         emitDir,
-        roleModels: ROLE_MODELS,
+        aliases: ALIASES,
         availableModels: AVAILABLE,
       });
       assert.deepEqual(plan.missingFiles, [], stage);
@@ -192,7 +196,7 @@ test("real Python TA/ADJ/QC prompts dispatch with routed role models and merge",
       stage: "ta",
       workDir: fixture.work,
       emitDir: join(fixture.emit, "ta"),
-      roleModels: ROLE_MODELS,
+      aliases: ALIASES,
       availableModels: AVAILABLE,
     });
     assert.equal(plan.contextID, fixture.taContext);
@@ -201,6 +205,12 @@ test("real Python TA/ADJ/QC prompts dispatch with routed role models and merge",
     assert.deepEqual(plan.roleCounts, { A: 1, B: 1, ADJ: 1, QC: 1 });
     assert.deepEqual(plan.missingModels, []);
     assert.deepEqual(plan.missingFiles, []);
+
+    // Alias-only configuration: the approval names every resolved role.
+    const approval = describePlan(plan);
+    assert.match(approval, /A -> fixture\/model \(models\.aliases\.sonnet\)/);
+    assert.match(approval, /ADJ -> fixture\/model \(models\.aliases\.opus\)/);
+    assert.match(approval, /QC -> fixture\/model \(models\.aliases\.haiku\)/);
 
     const port = fakePort((prompt) => {
       if (prompt.includes("REVIEWER A")) {
@@ -231,7 +241,6 @@ test("real Python TA/ADJ/QC prompts dispatch with routed role models and merge",
       outFile: out,
       port,
       approve: true,
-      roleModels: ROLE_MODELS,
       availableModels: AVAILABLE,
     });
     assert.equal(result.calls, 4);
@@ -299,7 +308,7 @@ test("real Python FT prompts dispatch with routed role models", async (t) => {
       stage: "ft",
       workDir: fixture.work,
       emitDir: join(fixture.emit, "ft"),
-      roleModels: ROLE_MODELS,
+      aliases: ALIASES,
       availableModels: AVAILABLE,
     });
     assert.equal(plan.contextID, fixture.ftContext);
@@ -307,6 +316,9 @@ test("real Python FT prompts dispatch with routed role models", async (t) => {
     assert.equal(plan.maxCalls, 6);
     assert.deepEqual(plan.roleCounts, { FTA: 1, FTB: 1, FTADJ: 1 });
     assert.deepEqual(plan.unreadablePdfs, []);
+    const approval = describePlan(plan);
+    assert.match(approval, /FTA -> fixture\/model \(models\.aliases\.sonnet\)/);
+    assert.match(approval, /FTADJ -> fixture\/model \(models\.aliases\.opus\)/);
 
     const port = fakePort((prompt) =>
       decisionsFor(prompt, { R00001: { d: "include", code: "INC" } }),
@@ -317,7 +329,6 @@ test("real Python FT prompts dispatch with routed role models", async (t) => {
       outFile: join(fixture.work, "opencode_ft.json"),
       port,
       approve: true,
-      roleModels: ROLE_MODELS,
       availableModels: AVAILABLE,
     });
     assert.deepEqual(result.pending, []);

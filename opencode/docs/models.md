@@ -7,16 +7,20 @@ such as `sonnet` and `opus`. **You do not need to use Claude, and you do not
 need to know those product names.** In this adapter they are capability hints:
 map each hint to a model your OpenCode provider actually offers.
 
-The adapter never selects a tier on its own. It uses exactly the mapping you
-provide, and a missing mapping blocks the affected command before dispatch.
+The adapter never picks a model for a command on its own: it uses exactly the
+mapping you provide, and a missing mapping blocks the affected command before
+dispatch. Screening is the one deliberate exception. The unchanged emitter names
+`sonnet` for every role, so planning resolves that single source default to a
+per-role tier (see [Screening roles](#screening-roles)). Any other source model
+keeps its own name.
 
 ## What the tiers mean
 
 | Source hint | Think of it as | Typical use | Current ARS commands |
 |---|---|---|---|
 | `sonnet` | **Balanced / mid-tier** | Main research, planning, writing and review commands; the default quality/cost balance | 12 of the 16 `/ars-*` commands declare it |
-| `opus` | **High-end / strongest** | Hard synthesis, complex review, high-stakes planning; usually slower and more expensive | No current source command declares it; optional for custom commands or agents whose frontmatter requests `opus` |
-| `haiku` | **Low-end / fast and cheap** | Classification, extraction, bulk checks, low-risk mechanical work | No current source command declares it; optional for custom commands or agents whose frontmatter requests `haiku` |
+| `opus` | **High-end / strongest** | Hard synthesis, complex review, high-stakes planning; usually slower and more expensive | No current source command declares it; optional for custom commands or agents whose frontmatter requests `opus`, and the default `ADJ`/`FTADJ` screening tier |
+| `haiku` | **Low-end / fast and cheap** | Classification, extraction, bulk checks, low-risk mechanical work | No current source command declares it; optional for custom commands or agents whose frontmatter requests `haiku`, and the default `QC` screening tier |
 
 The four remaining commands do not declare a model and inherit the session
 model. The config key stays `sonnet` because that is the source hint; it does
@@ -46,7 +50,8 @@ A minimal models file maps only the balanced tier:
 }
 ```
 
-Add the other tiers only when something uses them:
+Add the other tiers to get the per-role screening layout; without them,
+screening falls back to `sonnet` and warns:
 
 ```json
 {
@@ -58,32 +63,43 @@ Add the other tiers only when something uses them:
 }
 ```
 
-Screening roles can use different tiers. A reasonable starting point is:
+### Screening roles
 
-| Role | Suggested tier | Why |
+The unchanged emitter writes `model: sonnet` for all seven roles
+(`srlib.py:374-375`). Planning resolves that single source default to the tier
+layout below, so a default install with only `models.aliases.sonnet` can run
+screening:
+
+| Role | Tier | Why |
 |---|---|---|
-| `A`, `B` | Balanced / mid-tier | Primary title-and-abstract reviewers |
-| `FTA`, `FTB` | Balanced / mid-tier | Primary full-text reviewers |
-| `ADJ`, `FTADJ` | High-end / strongest | Adjudication between reviewers benefits from stronger reasoning |
-| `QC` | Low-end / cheap | Mechanical quality checks |
+| `A`, `B` | `sonnet` | Primary title-and-abstract reviewers |
+| `FTA`, `FTB` | `sonnet` | Primary full-text reviewers |
+| `ADJ`, `FTADJ` | `opus` | Adjudication between reviewers benefits from stronger reasoning |
+| `QC` | `haiku` | Mechanical quality checks |
 
-These are suggestions, not automatic assignments. Use the same model for every
-role if that is simpler. The seven role names are `A`, `B`, `ADJ`, `QC`, `FTA`,
-`FTB` and `FTADJ`; the installer validates each reference and writes it into
-`options.screening.roles`.
+Resolution happens once, in planning, in this order:
 
-**What happens if you do not configure roles?** It depends on whether the
-emitted screening config names a model for the role:
+1. `screening.roles.<role>` wins when you set it: a direct model reference.
+2. Otherwise the role's tier alias (`models.aliases.opus` for `ADJ`, and so on).
+3. If that tier alias is absent, `models.aliases.sonnet` is used and the
+   approval text warns which tier is missing.
+4. If neither exists, dispatch is blocked and names the role.
 
-- **No model named:** no mapping is needed. The reviewer uses its effective
-  model; by default it inherits the session model, or uses a
-  `screening-reviewer-agent` override if you set one.
-- **A model is named:** that role must be mapped. A missing mapping blocks
-  dispatch before any reviewer call and reports `blocked models` with the
-  missing role. It does **not** silently fall back to the session model.
+Only the source `sonnet` default is rewritten this way. A profile that names
+another model (for example a `quality` profile with `opus`) keeps it: the role
+resolves through `models.aliases.opus` and is never re-mapped to the tier
+layout. An alias that exists but names a model the host does not offer blocks
+the dispatch; there is no second fallback. A role whose emitted entry names no
+model inherits the session model, and a `screening.roles` value for it is
+ignored.
 
-Omitting `screening.roles` therefore does not block installation; it only blocks
-a screening dispatch when the emitted config requires a role model.
+The Model Tiering table and `model_labels` in the `sr-screener` skill describe
+the **source** configuration. This adapter deliberately differs — `ADJ`/`FTADJ`
+use `opus` and `QC` uses `haiku` — so read the approval text returned by
+`ars_screening` as the authoritative record of the model each role will use.
+
+The seven role names are `A`, `B`, `ADJ`, `QC`, `FTA`, `FTB` and `FTADJ`.
+Omitting `screening.roles` does not block installation.
 
 ### How to configure `screening.roles`
 
@@ -110,12 +126,11 @@ sits beside `aliases`, not inside it:
 ```
 
 - Each role value is `{ "providerID": "...", "model": "..." }`, the same shape as
-  an alias; do not use tier keys such as `sonnet` or `haiku`.
-- You can configure all seven roles. For title/abstract screening only, `A`, `B`,
-  `ADJ` and `QC` are enough; for full-text screening only, `FTA`, `FTB` and
-  `FTADJ` are enough. The emitted screening config decides which roles actually
-  need a model.
-- All roles may use the same model, or follow the tier suggestions above.
+  an alias; it is a real model reference, not an alias key such as `sonnet`.
+- Configure only the roles you want to override; any role you leave out follows
+  the tier layout above. For title/abstract screening only, `A`, `B`, `ADJ` and
+  `QC` matter; for full-text screening only, `FTA`, `FTB` and `FTADJ`.
+- All roles may use the same model.
 - The installer validates each reference and writes it to the plugin options as
   `screening.roles`; whether the model exists is verified by the host at load
   time, not by the offline installation check.
@@ -129,8 +144,10 @@ node "C:/work/academic-research-skills/opencode/install.ts" install `
   --models "C:/research/ars-models.json" --apply
 ```
 
-Screening roles and `models.agents.<id>` are **direct model references**, not
-`models.aliases` keys. `haiku` or `opus` aliases do not apply to them.
+`models.agents.<id>` and explicit `screening.roles.<role>` are **direct model
+references**. Roles you leave unset are resolved through `models.aliases` as
+described above, so the `haiku` and `opus` aliases do apply to the default
+screening roles.
 
 Omitting `--models` on a later update or check preserves the persisted mappings;
 it does not reset them. Store credentials through OpenCode, never in this file.
@@ -138,8 +155,9 @@ it does not reset them. Store credentials through OpenCode, never in this file.
 ## What consumes a mapping
 
 - **Plugin channel:** command aliases (`models.aliases.<alias>`), native agent
-  overrides (`models.agents.<id>`) and screening role mappings
-  (`screening.roles.<role>`). The adapter itself never invents a model.
+  overrides (`models.agents.<id>`) and screening roles. A screening role uses
+  `screening.roles.<role>` when you set it, otherwise `models.aliases.<tier>`.
+  The adapter itself never invents a model.
 - **Skills channel:** no plugin options exist. The reviewer keeps its source
   `inherit` model; `--models` is rejected instead of being silently dropped.
 - A mapping is a provider/model reference only. It never carries credentials.
@@ -182,7 +200,7 @@ is a template, not a required assignment:
           "aliases": {
             // Balanced / mid-tier: the 12 commands that declare `sonnet`.
             "sonnet": { "providerID": "your-provider", "model": "your-balanced-model" },
-            // High-end / strongest: only needed for custom commands or agents that declare `opus`.
+            // High-end / strongest: custom `opus` commands, agents, and the `ADJ`/`FTADJ` screening tier.
             "opus": { "providerID": "your-provider", "model": "your-strongest-model" }
           },
           "agents": {
@@ -207,7 +225,9 @@ is a template, not a required assignment:
 }
 ```
 
-The seven screening roles must each be mapped when the emitted
-`screening_config.json` names a model for them. The dispatcher switches each
-child session's model, reads the effective model back, and refuses to prompt if
-it does not match. Missing mappings block the dispatch.
+When the emitted `screening_config.json` names `sonnet` for a role, the
+dispatcher needs `models.aliases.sonnet`, plus the `opus` and `haiku` aliases if
+you want the tier layout above. It switches each child session to the model the
+plan stored for that role, reads the effective model back, and prompts only if
+it matches. A role whose model cannot be resolved, or names a model the host
+does not offer, blocks the dispatch before any reviewer call.

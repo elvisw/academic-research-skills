@@ -2877,13 +2877,16 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
     }
     const effectiveScreening = input.screeningRoles ?? request.screeningRoles;
     const mappedRoles = Object.keys(effectiveScreening ?? {});
+    const aliasKeys = Object.keys(effectiveModels?.aliases ?? {});
     pushCheck(
       checks,
       "screening-models",
       mappedRoles.length ? "ok" : "warn",
       mappedRoles.length
         ? `screening roles configured: ${mappedRoles.join(", ")}; availability is verified by the host`
-        : "no screening role mappings; screening calls use the session model unless the plugin options carry screening.roles",
+        : aliasKeys.length
+          ? "no explicit screening role overrides; roles you leave unlisted use the models.aliases tier defaults (sonnet/opus/haiku)"
+          : "no screening role mappings and no models.aliases; screening roles stay blocked until models.aliases.* are configured",
     );
   }
 

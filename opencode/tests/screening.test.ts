@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  describePlan,
   extractJson,
   parseExclusionCodes,
   parseExpectedIds,
@@ -20,6 +21,7 @@ import {
   validateDecisions,
   type ScreeningPort,
 } from "../src/screening.ts";
+import type { ModelRef } from "../src/setup.ts";
 
 const CONTEXT = "abcdef0123456789";
 
@@ -189,14 +191,18 @@ test("plan validates context binding, batches, PDFs and role models", () => {
     assert.equal(blocked.calls, 2);
     assert.deepEqual(blocked.roleCounts, { A: 1, B: 1 });
     assert.equal(blocked.missingModels.length, 2);
+    assert.match(
+      blocked.missingModels.join("; "),
+      /A \(sonnet\): no models\.aliases\.sonnet/,
+    );
+    assert.match(describePlan(blocked), /blocked models:/);
 
     const plan = planScreening({
       stage: "ta",
       workDir: work,
       emitDir: emit,
-      roleModels: {
-        A: { providerID: "anthropic", model: "claude-sonnet-4-5" },
-        B: { providerID: "anthropic", model: "claude-sonnet-4-5" },
+      aliases: {
+        sonnet: { providerID: "anthropic", model: "claude-sonnet-4-5" },
       },
       availableModels: [
         { providerID: "anthropic", id: "claude-sonnet-4-5" },
@@ -205,6 +211,12 @@ test("plan validates context binding, batches, PDFs and role models", () => {
     assert.deepEqual(plan.missingModels, []);
     assert.deepEqual(plan.missingFiles, []);
     assert.equal(plan.contextID, CONTEXT);
+    // The source default resolves to the role tier, and the plan stores it.
+    assert.deepEqual(plan.entries[0]?.resolvedModel, {
+      providerID: "anthropic",
+      model: "claude-sonnet-4-5",
+    });
+    assert.equal(plan.entries[0]?.resolvedBy, "models.aliases.sonnet");
 
     // A mismatched label/context is refused, not "fixed".
     writeFileSync(
@@ -245,7 +257,9 @@ test("plan validates context binding, batches, PDFs and role models", () => {
       stage: "ft",
       workDir: work,
       emitDir: emit,
-      roleModels: { FTA: { providerID: "anthropic", model: "claude-sonnet-4-5" } },
+      aliases: {
+        sonnet: { providerID: "anthropic", model: "claude-sonnet-4-5" },
+      },
       availableModels: [{ providerID: "anthropic", id: "claude-sonnet-4-5" }],
     });
     assert.equal(ft.unreadablePdfs.length, 1);
@@ -257,10 +271,299 @@ test("plan validates context binding, batches, PDFs and role models", () => {
       stage: "ft",
       workDir: work,
       emitDir: emit,
-      roleModels: { FTA: { providerID: "anthropic", model: "claude-sonnet-4-5" } },
+      aliases: {
+        sonnet: { providerID: "anthropic", model: "claude-sonnet-4-5" },
+      },
       availableModels: [{ providerID: "anthropic", id: "claude-sonnet-4-5" }],
     });
     assert.deepEqual(ok.unreadablePdfs, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const TIER_ALIASES: Record<string, ModelRef> = {
+  sonnet: { providerID: "fixture", model: "sonnet-model" },
+  opus: { providerID: "fixture", model: "opus-model" },
+  haiku: { providerID: "fixture", model: "haiku-model" },
+};
+const TIER_AVAILABLE = [
+  { providerID: "fixture", id: "sonnet-model" },
+  { providerID: "fixture", id: "opus-model" },
+  { providerID: "fixture", id: "haiku-model" },
+];
+
+function refsByRole(
+  plan: ReturnType<typeof planScreening>,
+): Record<string, string | undefined> {
+  return Object.fromEntries(
+    plan.entries.map((entry) => [
+      roleOf(entry.label),
+      entry.resolvedModel?.model,
+    ]),
+  );
+}
+
+test("the source default resolves each role to its tier and the approval names it", () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [
+      { role: "A", model: "sonnet" },
+      { role: "B", model: "sonnet" },
+      { role: "ADJ", model: "sonnet" },
+      { role: "QC", model: "sonnet" },
+    ]);
+    const plan = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: TIER_ALIASES,
+      availableModels: TIER_AVAILABLE,
+    });
+    assert.deepEqual(plan.missingModels, []);
+    assert.deepEqual(plan.warnings, []);
+    assert.deepEqual(refsByRole(plan), {
+      A: "sonnet-model",
+      B: "sonnet-model",
+      ADJ: "opus-model",
+      QC: "haiku-model",
+    });
+    const text = describePlan(plan);
+    assert.match(text, /A -> fixture\/sonnet-model \(models\.aliases\.sonnet\)/);
+    assert.match(text, /ADJ -> fixture\/opus-model \(models\.aliases\.opus\)/);
+    assert.match(text, /QC -> fixture\/haiku-model \(models\.aliases\.haiku\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a missing tier alias falls back to sonnet and warns by tier", () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [
+      { role: "A", model: "sonnet" },
+      { role: "ADJ", model: "sonnet" },
+      { role: "QC", model: "sonnet" },
+    ]);
+    const plan = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: { sonnet: { providerID: "fixture", model: "sonnet-model" } },
+      availableModels: [{ providerID: "fixture", id: "sonnet-model" }],
+    });
+    assert.deepEqual(plan.missingModels, []);
+    assert.deepEqual(refsByRole(plan), {
+      A: "sonnet-model",
+      ADJ: "sonnet-model",
+      QC: "sonnet-model",
+    });
+    assert.equal(plan.warnings.length, 2);
+    assert.ok(plan.warnings.some((warning) => /models\.aliases\.opus/.test(warning)));
+    assert.ok(plan.warnings.some((warning) => /models\.aliases\.haiku/.test(warning)));
+    const text = describePlan(plan);
+    assert.match(
+      text,
+      /ADJ -> fixture\/sonnet-model \(models\.aliases\.sonnet \(fallback for opus\)\)/,
+    );
+    assert.match(text, /warning: role QC: models\.aliases\.haiku is not configured/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unoffered tier alias blocks instead of falling back", () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [
+      { role: "A", model: "sonnet" },
+      { role: "ADJ", model: "sonnet" },
+    ]);
+    const plan = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: {
+        sonnet: { providerID: "fixture", model: "sonnet-model" },
+        opus: { providerID: "fixture", model: "missing-model" },
+      },
+      availableModels: [{ providerID: "fixture", id: "sonnet-model" }],
+    });
+    assert.equal(plan.missingModels.length, 1);
+    assert.match(plan.missingModels[0] ?? "", /models\.aliases\.opus/);
+    assert.match(plan.missingModels[0] ?? "", /fixture\/missing-model/);
+    assert.equal(plan.entries[0]?.resolvedModel?.model, "sonnet-model");
+    assert.equal(plan.entries[1]?.resolvedModel, undefined);
+    assert.match(describePlan(plan), /ADJ -> blocked/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a non-default source model keeps its own alias and never gets a tier", () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [{ role: "ADJ", model: "opus" }]);
+    const plan = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: { sonnet: { providerID: "fixture", model: "sonnet-model" } },
+      availableModels: [{ providerID: "fixture", id: "sonnet-model" }],
+    });
+    assert.deepEqual(plan.missingModels, ["ADJ (opus): no models.aliases.opus"]);
+    assert.equal(plan.entries[0]?.resolvedModel, undefined);
+    assert.equal(plan.entries[0]?.modelBlocked, "ADJ (opus): no models.aliases.opus");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an explicit role wins and an unoffered explicit ref blocks", () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [{ role: "A", model: "sonnet" }]);
+    const explicit: ModelRef = { providerID: "fixture", model: "chosen" };
+    const blocked = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: TIER_ALIASES,
+      roleModels: { A: explicit },
+      availableModels: TIER_AVAILABLE,
+    });
+    assert.equal(blocked.missingModels.length, 1);
+    assert.match(blocked.missingModels[0] ?? "", /explicit screening\.roles\.A/);
+    assert.match(blocked.missingModels[0] ?? "", /fixture\/chosen/);
+    assert.equal(blocked.entries[0]?.resolvedModel, undefined);
+
+    const chosen = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: TIER_ALIASES,
+      roleModels: { A: explicit },
+      availableModels: [...TIER_AVAILABLE, { providerID: "fixture", id: "chosen" }],
+    });
+    assert.deepEqual(chosen.missingModels, []);
+    assert.deepEqual(chosen.entries[0]?.resolvedModel, explicit);
+    assert.equal(chosen.entries[0]?.resolvedBy, "screening.roles.A");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unknown source model blocks and names the role and the model", () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [{ role: "A", model: "custom" }]);
+    const plan = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: TIER_ALIASES,
+      availableModels: TIER_AVAILABLE,
+    });
+    assert.deepEqual(plan.missingModels, ["A (custom): no models.aliases.custom"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an empty or absent model inherits and ignores a role override", async () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [{ role: "A", model: "" }]);
+    const unoffered: ModelRef = { providerID: "fixture", model: "never-used" };
+    const empty = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      roleModels: { A: unoffered },
+    });
+    assert.deepEqual(empty.missingModels, []);
+    assert.equal(empty.entries[0]?.resolvedModel, undefined);
+    assert.equal(empty.entries[0]?.resolvedBy, "inherit");
+    assert.match(describePlan(empty), /A -> inherit/);
+
+    // Absent `model` behaves the same as `""`.
+    writeFileSync(
+      join(emit, "index.json"),
+      JSON.stringify([
+        {
+          label: `A:b001@${CONTEXT}`,
+          context: { context_id: CONTEXT },
+          prompt_file: join(emit, "A_b001.txt"),
+        },
+      ]),
+      "utf8",
+    );
+    const absent = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      roleModels: { A: unoffered },
+    });
+    assert.deepEqual(absent.missingModels, []);
+    assert.equal(absent.entries[0]?.resolvedBy, "inherit");
+
+    const port = fakePort([
+      [
+        JSON.stringify({
+          decisions: [
+            { id: "R00001", d: "include", code: "INC", why: "fits" },
+            { id: "R00002", d: "include", code: "INC", why: "fits" },
+          ],
+        }),
+      ],
+    ]);
+    const result = await runScreening({
+      plan: absent,
+      workDir: work,
+      outFile: join(work, "out.json"),
+      port,
+      approve: true,
+    });
+    assert.deepEqual(port.models, [], "no model switch for an inherited role");
+    assert.deepEqual(result.pending, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dispatch applies exactly the refs the plan stored", async () => {
+  const { root, work, emit } = fixture();
+  try {
+    writeTaIndex(emit, [
+      { role: "A", model: "sonnet" },
+      { role: "ADJ", model: "sonnet" },
+    ]);
+    const plan = planScreening({
+      stage: "ta",
+      workDir: work,
+      emitDir: emit,
+      aliases: TIER_ALIASES,
+      availableModels: TIER_AVAILABLE,
+    });
+    const reply = JSON.stringify({
+      decisions: [
+        { id: "R00001", d: "include", code: "INC", why: "fits" },
+        { id: "R00002", d: "include", code: "INC", why: "fits" },
+      ],
+    });
+    const port = fakePort([[reply], [reply]]);
+    await runScreening({
+      plan,
+      workDir: work,
+      outFile: join(work, "out.json"),
+      port,
+      approve: true,
+      availableModels: TIER_AVAILABLE,
+    });
+    assert.deepEqual(port.models, [
+      { providerID: "fixture", model: "sonnet-model" },
+      { providerID: "fixture", model: "opus-model" },
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -318,38 +621,53 @@ function fakePort(
   };
 }
 
-function taPlanFixture(model = ""): {
+/** Write an index for one batch per role; `model` defaults to `""`. */
+function writeTaIndex(
+  emit: string,
+  entries: { role: string; model?: string }[],
+): void {
+  const index: unknown[] = [];
+  for (const entry of entries) {
+    const file = `${entry.role}_b001.txt`;
+    writeFileSync(join(emit, file), taPrompt(2), "utf8");
+    index.push({
+      label: `${entry.role}:b001@${CONTEXT}`,
+      context: { context_id: CONTEXT },
+      prompt_file: join(emit, file),
+      model: entry.model ?? "",
+    });
+  }
+  writeFileSync(join(emit, "index.json"), JSON.stringify(index), "utf8");
+}
+
+function taPlanFixture(
+  model = "",
+  options: {
+    aliases?: Record<string, ModelRef>;
+    roles?: Record<string, ModelRef>;
+    available?: { providerID: string; id: string }[];
+  } = {},
+): {
   root: string;
   work: string;
   emit: string;
   plan: ReturnType<typeof planScreening>;
 } {
   const { root, work, emit } = fixture();
-  writeFileSync(join(emit, "A_b001.txt"), taPrompt(2), "utf8");
-  writeFileSync(
-    join(emit, "index.json"),
-    JSON.stringify([
-      {
-        label: `A:b001@${CONTEXT}`,
-        context: { context_id: CONTEXT },
-        prompt_file: join(emit, "A_b001.txt"),
-        model,
-      },
-    ]),
-    "utf8",
-  );
+  writeTaIndex(emit, [{ role: "A", model }]);
   const plan = planScreening({
     stage: "ta",
     workDir: work,
     emitDir: emit,
-    ...(model
-      ? {
-          roleModels: {
-            A: { providerID: "fixture", model: "model" },
-          },
-          availableModels: [{ providerID: "fixture", id: "model" }],
-        }
-      : {}),
+    aliases:
+      options.aliases ??
+      (model
+        ? { [model]: { providerID: "fixture", model: "model" } }
+        : undefined),
+    roleModels: options.roles,
+    availableModels:
+      options.available ??
+      (model ? [{ providerID: "fixture", id: "model" }] : undefined),
   });
   return { root, work, emit, plan };
 }
@@ -562,7 +880,7 @@ test("a failed reviewer session leaves its records pending", async () => {
   }
 });
 
-test("the configured role model is applied and verified before the prompt", async () => {
+test("the resolved role model is applied and verified before the prompt", async () => {
   const { root, work, plan } = taPlanFixture("fixture-model");
   try {
     const port = fakePort([
@@ -582,7 +900,6 @@ test("the configured role model is applied and verified before the prompt", asyn
       outFile: out,
       port,
       approve: true,
-      roleModels: { A: { providerID: "fixture", model: "model" } },
       availableModels: [{ providerID: "fixture", id: "model" }],
     });
     assert.deepEqual(port.models, [{ providerID: "fixture", model: "model" }]);
@@ -617,7 +934,6 @@ test("a wrong effective model blocks the call and leaves it pending", async () =
       outFile: join(work, "out.json"),
       port,
       approve: true,
-      roleModels: { A: { providerID: "fixture", model: "model" } },
       availableModels: [{ providerID: "fixture", id: "model" }],
     });
     assert.equal(result.results[0]?.decisions.length, 0);

@@ -105,11 +105,17 @@ function projectRootOf(ctx: Plugin.Context): string {
 }
 
 async function hostSnapshot(ctx: Plugin.Context): Promise<HostSnapshot> {
+  let modelsUnavailable: string | undefined;
   const [agents, skills, commands, models] = await Promise.all([
     ctx.agent.list().catch(() => ({ data: [] })),
     ctx.skill.list().catch(() => ({ data: [] })),
     ctx.command.list().catch(() => ({ data: [] })),
-    ctx.model.list().catch(() => ({ data: [] })),
+    ctx.model.list().catch((error: unknown) => {
+      modelsUnavailable =
+        (error as Error | undefined)?.message?.trim() ||
+        "the host returned no error detail";
+      return { data: [] };
+    }),
   ]);
   return {
     agents: (agents.data ?? []).map((agent) => ({
@@ -139,6 +145,7 @@ async function hostSnapshot(ctx: Plugin.Context): Promise<HostSnapshot> {
       providerID: String(model.providerID),
       id: String(model.id),
     })),
+    ...(modelsUnavailable ? { modelsUnavailable } : {}),
     capabilities: probeCapabilities(ctx),
   };
 }
@@ -854,6 +861,15 @@ export default Plugin.define({
               };
             }
             const host = await hostSnapshot(ctx);
+            if (host.modelsUnavailable) {
+              return {
+                content:
+                  `ARS screening: could not enumerate this host's models (${host.modelsUnavailable}). ` +
+                  "Model availability cannot be verified, so nothing was dispatched. " +
+                  "Retry once the model list loads; this is not a mapping error.",
+                metadata: { status: "blocked" },
+              };
+            }
             const expectedReviewer = loadNativeAgents(
               packageRoot,
               options,
@@ -896,11 +912,11 @@ export default Plugin.define({
                 stage: value.stage,
                 workDir,
                 emitDir,
+                aliases: options.models?.aliases,
                 roleModels: options.screening?.roles,
-                availableModels: (await ctx.model.list()).data.map((model) => ({
-                  providerID: String(model.providerID),
-                  id: String(model.id),
-                })),
+                // One host snapshot for planning and dispatch: the run only
+                // rechecks the refs the plan stored against the same list.
+                availableModels: host.models,
               });
             } catch (error) {
               return {
@@ -1024,11 +1040,7 @@ export default Plugin.define({
               outFile,
               port,
               approve: true,
-              roleModels: options.screening?.roles,
-              availableModels: (await ctx.model.list()).data.map((model) => ({
-                providerID: String(model.providerID),
-                id: String(model.id),
-              })),
+              availableModels: host.models,
               onProgress: (message) => console.info(`[ARS screening] ${message}`),
             });
 

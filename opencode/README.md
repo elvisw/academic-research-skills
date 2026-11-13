@@ -139,13 +139,17 @@ requirement to use Claude. Think of them as tiers:
 - `sonnet` — balanced / mid-tier. 12 of the 16 `/ars-*` commands declare it;
   of those, three CLI wrappers do not apply model routing.
 - `opus` — high-end / strongest. No current command declares it; optional for
-  custom commands or agents whose frontmatter requests `opus`.
+  custom commands or agents whose frontmatter requests `opus`, and the default
+  `ADJ`/`FTADJ` screening tier.
 - `haiku` — low-end / fast and cheap. No current command declares it; optional
-  for custom commands or agents whose frontmatter requests `haiku`.
+  for custom commands or agents whose frontmatter requests `haiku`, and the
+  default `QC` screening tier.
 
-Agent overrides (`models.agents.<id>`) and screening roles
-(`screening.roles.<role>`) are direct model references; they do not consume these
-alias keys.
+Agent overrides (`models.agents.<id>`) and `screening.roles.<role>` are direct
+model references. Screening roles you leave unset resolve through the same alias
+keys: the emitter's `sonnet` default maps to `sonnet` for `A`/`B`/`FTA`/`FTB`,
+`opus` for `ADJ`/`FTADJ` and `haiku` for `QC`, falling back to
+`models.aliases.sonnet` with a warning when a tier is missing.
 
 Map each hint to a model your provider actually offers. The config key stays
 `sonnet` because that is the source hint; it does not mean “Claude Sonnet.” The
@@ -156,8 +160,8 @@ which is same-provider only. If the session and the mapped model are on
 different providers, the command blocks with an actionable message. Native
 agents inherit the source model unless `models.agents.<id>` is set.
 
-Tier suggestions for screening roles, the full JSONC example and the exact
-routing rules are in [Model selection and mapping](docs/models.md).
+Screening tier defaults, the full JSONC example and the exact routing rules are
+in [Model selection and mapping](docs/models.md).
 
 ## Use
 

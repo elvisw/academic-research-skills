@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
@@ -31,6 +32,7 @@ function fakeHost(
     existingCommands?: { name: string; description?: string }[];
     sessionAgent?: string;
     sessionGetError?: string;
+    modelListError?: string;
   } = {},
 ) {
   const skills: unknown[] = [];
@@ -113,13 +115,16 @@ function fakeHost(
       },
     },
     model: {
-      list: async () => ({
-        data: [
-          { providerID: "anthropic", id: "claude-sonnet-4-5" },
-          { providerID: "anthropic", id: "claude-opus-4-1" },
-          { providerID: "other", id: "model" },
-        ],
-      }),
+      list: async () => {
+        if (options.modelListError) throw new Error(options.modelListError);
+        return {
+          data: [
+            { providerID: "anthropic", id: "claude-sonnet-4-5" },
+            { providerID: "anthropic", id: "claude-opus-4-1" },
+            { providerID: "other", id: "model" },
+          ],
+        };
+      },
     },
     permission: {
       hook: async (
@@ -441,6 +446,110 @@ test("native ARS agents cannot call the adapter mutation tools", async () => {
     assert.equal(mainResult.metadata.status, "blocked");
     assert.match(mainResult.content, /screening index not found/);
     assert.equal(host.sessionsCreated(), beforeSessions);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("an alias-only screening approval names every resolved role", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ars-screening-approval-"));
+  const work = join(root, "work");
+  const emit = join(root, "prompts");
+  const context = "abcdef0123456789";
+  mkdirSync(join(work, "batches"), { recursive: true });
+  mkdirSync(emit, { recursive: true });
+  writeFileSync(join(work, "batches", "b001.txt"), "records\n", "utf8");
+  const index: unknown[] = [];
+  for (const role of ["A", "B", "ADJ", "QC"]) {
+    const file = join(emit, `${role}_b001.txt`);
+    writeFileSync(
+      file,
+      [
+        `You are REVIEWER ${role}.`,
+        "checking the codes in this order: E1 (RCT only).",
+        "The batch contains 2 records, IDs R00001 to R00002.",
+      ].join("\n"),
+      "utf8",
+    );
+    index.push({
+      label: `${role}:b001@${context}`,
+      context: { context_id: context },
+      prompt_file: file,
+      model: "sonnet",
+    });
+  }
+  writeFileSync(join(emit, "index.json"), JSON.stringify(index), "utf8");
+
+  const host = fakeHost({
+    aliases: {
+      sonnet: { providerID: "anthropic", model: "claude-sonnet-4-5" },
+      opus: { providerID: "anthropic", model: "claude-opus-4-1" },
+      haiku: { providerID: "other", model: "model" },
+    },
+  });
+  (host.ctx.agent as {
+    list: () => Promise<{ data: { id: string }[] }>;
+  }).list = async () => {
+    const reviewer = loadNativeAgents(repoRoot, {}, []).agents.find(
+      (agent) => agent.id === "screening-reviewer-agent",
+    );
+    assert.ok(reviewer);
+    return {
+      data: [
+        {
+          id: reviewer.id,
+          system: reviewer.system,
+          mode: reviewer.mode,
+          permissions: reviewer.permissions,
+          model: reviewer.model,
+        },
+      ],
+    };
+  };
+  const setup = pluginDefinition.setup as (ctx: unknown) => Promise<() => Promise<void>>;
+  const cleanup = await setup(host.ctx);
+  try {
+    const tool = host.tools.find(
+      (candidate) => candidate.name === "ars_screening",
+    );
+    assert.ok(tool);
+    const result = (await tool.execute(
+      { stage: "ta", work, emit },
+      { sessionID: "ses-1", agent: "build" },
+    )) as { content: string; metadata: { status: string } };
+    assert.equal(result.metadata.status, "needs-approval");
+    assert.match(result.content, /A -> anthropic\/claude-sonnet-4-5 \(models\.aliases\.sonnet\)/);
+    assert.match(result.content, /B -> anthropic\/claude-sonnet-4-5 \(models\.aliases\.sonnet\)/);
+    assert.match(
+      result.content,
+      /ADJ -> anthropic\/claude-opus-4-1 \(models\.aliases\.opus\)/,
+    );
+    assert.match(result.content, /QC -> other\/model \(models\.aliases\.haiku\)/);
+    assert.equal(host.sessionsCreated(), 0);
+  } finally {
+    await cleanup();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed model enumeration blocks screening instead of blaming the mapping", async () => {
+  const host = fakeHost({ modelListError: "model backend unavailable" });
+  const setup = pluginDefinition.setup as (ctx: unknown) => Promise<() => Promise<void>>;
+  const cleanup = await setup(host.ctx);
+  try {
+    const tool = host.tools.find(
+      (candidate) => candidate.name === "ars_screening",
+    );
+    assert.ok(tool);
+    const result = (await tool.execute(
+      { stage: "ta", work: repoRoot, emit: repoRoot },
+      { sessionID: "ses-1", agent: "build" },
+    )) as { content: string; metadata: { status: string } };
+    assert.equal(result.metadata.status, "blocked");
+    assert.match(result.content, /could not enumerate this host's models/);
+    assert.match(result.content, /model backend unavailable/);
+    assert.doesNotMatch(result.content, /not offered by this host/);
+    assert.equal(host.sessionsCreated(), 0);
   } finally {
     await cleanup();
   }
