@@ -81,6 +81,8 @@ v3.3 的靈感來自 [**PaperOrchestra**](https://arxiv.org/abs/2604.05018)（So
 
 **用 Codex CLI？** 請改裝姊妹版：[`Imbad0202/academic-research-skills-codex`](https://github.com/Imbad0202/academic-research-skills-codex)。同一套 workflow 內容，Codex 原生包裝為單一 `$academic-research-suite` skill，提供 `ars-*` 別名。
 
+**使用 OpenCode V2？** 依 [`opencode/README.md`](opencode/README.md) 安裝 repo 內的轉接層。它是圍繞未修改 ARS 核心的薄包裝，已在 Windows 11 + OpenCode 2.2.7 + Node 24 驗證；macOS/Linux 尚未驗證。
+
 ## 效能與費用
 
 **👉 [docs/PERFORMANCE.zh-TW.md](docs/PERFORMANCE.zh-TW.md)** — 各模式 token 預算、完整 pipeline 估算（一篇 15k 字論文，以 2026-09 牌價計約 US$3–7，未計 cache 折扣），以及建議的 Claude Code 設定（Auto 模式；Agent Team 選用）。

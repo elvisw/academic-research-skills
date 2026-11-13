@@ -82,6 +82,8 @@ El documento de arquitectura sustituye a la extensa descripción del pipeline qu
 
 **¿Usas Codex CLI?** Instala en su lugar la distribución hermana: [`Imbad0202/academic-research-skills-codex`](https://github.com/Imbad0202/academic-research-skills-codex) — el mismo contenido de workflow, empaquetado de forma nativa para Codex como una única skill `$academic-research-suite` con alias `ars-*`.
 
+**¿Usas OpenCode V2?** Instala el adaptador incluido en el repositorio siguiendo [`opencode/README.md`](opencode/README.md). Es un wrapper fino sobre el núcleo de ARS sin modificar, validado en Windows 11 con OpenCode 2.2.7 y Node 24; macOS/Linux no están probados.
+
 **Plataformas e integraciones de terceros** que envuelven u hospedan ARS están listadas en [THIRD_PARTY.md](THIRD_PARTY.md) — enviadas por la comunidad y no revisadas ni avaladas por quien mantiene el proyecto.
 
 **Gobernanza:** quién decide, qué aporta y qué no aporta la revisión entre modelos, y la postura de fin de vida del proyecto se explican en [GOVERNANCE.md](GOVERNANCE.md); la notificación de problemas de seguridad y su triage, en [SECURITY.md](SECURITY.md).

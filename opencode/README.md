@@ -21,12 +21,17 @@ patch/move/delete executors in the pre-installer baseline. The installation gate
 also passed both channels at both scopes on Node `24.21.0`, with no skipped
 cases: native skill/resource loading, assembled instructions, and legitimate/
 ARS-refused writes in two locations of one global-config server. Configuration
-presence alone is not acceptance. A local protocol fixture verified model IDs across
-command turns and tool continuation without calling an external model. Actual
-provider calls, native subagent dispatch, and the full research pipeline remain
-unverified; see Development below. Tests also use the installed
+presence alone is not acceptance. A real `/ars-full` run completed Stage 1–6 on
+Windows 11 with `commandcode/deepseek/deepseek-v4.1-flash` (USD 0.2328), and all
+16 public commands were invoked (15 stopped at their first checkpoint;
+`/ars-full` was the complete workflow). One native subagent dispatch probe
+succeeded. Full multi-agent orchestration (the pipeline dispatching native
+subagents) remains unverified, as do PDF export, Windows durable ledger, and
+Claude/Pi runtime regression; those are recorded limits in the acceptance
+matrix. A local protocol fixture verified model IDs across command turns and
+tool continuation without calling an external model. Tests also use the installed
 SDK, in-memory callbacks, and real Python guard/screening fixtures, none of which
-substitutes for full workflow acceptance.
+substitutes for full multi-agent orchestration acceptance.
 
 ## What is reused unchanged
 
@@ -491,8 +496,11 @@ weakened permissions. A loopback-only protocol fixture verified command model
 IDs across sequential turns and a real host tool continuation; it was not a
 real model or external provider. Probe evidence stays private.
 
-Still unverified: real provider model routing, native subagent dispatch,
-interruption/recovery, screening approval UI, and the complete academic
-pipeline. These require separately approved samples, models, and budget.
-The in-memory host in `tests/runtime.test.ts` proves callback behavior only;
-the direct host probes do not by themselves prove a model-driven workflow.
+Still unverified: real-provider alias routing (the loopback fixture is not an
+external provider), full multi-agent orchestration (one native subagent probe
+succeeded, but the pipeline itself did not dispatch subagents), the screening
+approval UI, and interruption/recovery beyond the recorded resume. The complete
+academic pipeline was run once (`/ars-full`, Stage 1–6); PDF export, Windows
+durable ledger, and Claude/Pi runtime regression remain recorded limits. The
+in-memory host in `tests/runtime.test.ts` proves callback behavior only; the
+direct host probes do not by themselves prove a model-driven workflow.

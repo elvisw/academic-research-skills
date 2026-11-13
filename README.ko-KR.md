@@ -72,6 +72,8 @@ v3.3은 [**PaperOrchestra**](https://arxiv.org/abs/2604.05018) (Song, Song, Pfis
 
 **Codex CLI를 사용하시나요?** 대신 자매 배포판을 설치하세요: [`Imbad0202/academic-research-skills-codex`](https://github.com/Imbad0202/academic-research-skills-codex) — 동일한 워크플로 콘텐츠를, `ars-*` 별칭을 갖는 단일 `$academic-research-suite` 스킬로 Codex 네이티브 패키징한 것입니다.
 
+**OpenCode V2를 사용하시나요?** [`opencode/README.md`](opencode/README.md)의 절차로 저장소 내 어댑터를 설치하세요. 변경되지 않은 ARS 코어를 감싸는 얇은 래퍼이며 Windows 11 + OpenCode 2.2.7 + Node 24에서 검증되었습니다. macOS/Linux는 아직 검증되지 않았습니다.
+
 ## 성능 & 비용
 
 **👉 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)** — 모드별 토큰 예산, 전체 파이프라인 추정치(15,000 단어 논문 기준, 2026-09 정가로 약 US$3–7, 캐시 할인 전), 권장 Claude Code 설정(Auto 모드. Agent Team 선택).

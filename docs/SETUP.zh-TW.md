@@ -259,6 +259,10 @@ printf '%s' "$CITATION_REQUEST_JSON" | scripts/cross_model_codex_verify.sh
 
 ---
 
+## OpenCode V2（獨立轉接層）
+
+ARS 核心共用，但 OpenCode 使用不同的宿主契約。請依 [`opencode/README.md`](../opencode/README.md) 安裝 repo 內的轉接層；它會註冊五個 skill、十六個 `/ars-*` 指令、四個原生 agent 與寫入範圍 guard。已在 Windows 11 + OpenCode 2.2.7 + Node 24 驗證；macOS/Linux 尚未驗證。這不是 Claude Code 的安裝方式，轉接層也不會修改 ARS 核心。
+
 ## 安裝方式
 
 Claude 會在 `<install-root>/<skill-name>/SKILL.md` 尋找 skills。這個 repo 包含五個獨立 skills，每個都有自己的 `SKILL.md`：
