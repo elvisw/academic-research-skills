@@ -133,3 +133,49 @@ the source `tools:` list.
 OpenCode commands are user-invoked by the host; the adapter preserves the
 source `disable-model-invocation` flag as metadata and does not expose a
 model-callable command tool.
+
+### Plugin options and models
+
+A manual plugin entry carries the same options the installer writes. A string
+entry (as in the fallback above) is enough when there are no options; use an
+object entry when you need `options`. Put `models.aliases`, optional
+`models.agents` and optional `screening.roles` under the entry's `options`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "./academic-research-skills/opencode",
+      "options": {
+        "repoRoot": "C:/work/academic-research-skills",
+        "models": {
+          "aliases": {
+            "sonnet": { "providerID": "your-provider", "model": "your-balanced-model" },
+            "opus": { "providerID": "your-provider", "model": "your-strongest-model" }
+          },
+          "agents": {
+            "synthesis-agent": { "providerID": "your-provider", "model": "your-strongest-model" }
+          }
+        },
+        "screening": {
+          "roles": {
+            "A": { "providerID": "your-provider", "model": "your-balanced-model" },
+            "ADJ": { "providerID": "your-provider", "model": "your-strongest-model" },
+            "QC": { "providerID": "your-provider", "model": "your-fast-model" }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+`models.aliases` is required for commands that declare a tier. `models.agents`
+and `screening.roles` are optional overrides; roles you leave out resolve through
+the aliases, as described in [models.md](models.md#screening-roles).
+
+If you installed with `--models`, the installer has already written this entry.
+Do not edit a second copy by hand: `ars-models.json` is an installation input,
+not a runtime file. Use the OpenCode config paths listed under
+[Installation channels](#installation-channels).

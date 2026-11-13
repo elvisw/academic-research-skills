@@ -152,9 +152,10 @@ C:\research\ars-models.json
 说明：
 
 - 16 个 ARS 命令中有 **12 个**声明了 `sonnet`，所以 `sonnet` 至少要映射；剩下 4 个继承当前会话模型。
+- 这个文件只在安装时使用：安装器会把内容写进项目 `opencode.json`（或全局 `~/.config/opencode/opencode.json`）的插件 options，运行时不再读取它。
 - `opus` 和 `haiku` 是筛选档位默认会用的档位（`ADJ`/`FTADJ` 和 `QC`）；不配时这些角色会回退到 `models.aliases.sonnet` 并给出警告。示例先列出来方便你看到三档的写法；如果暂时不用，可以删掉对应条目，保留就必须填真实模型，不能留着 `your-strongest-model` 这样的占位符。
 - 如果你自己新增了声明 `opus` 或 `haiku` 的命令或代理，再补对应档位。
-- 使用 `sr-screener` 筛选时，源端默认的 `sonnet` 会按角色解析到对应档位（`ADJ`/`FTADJ` 用 `opus`，`QC` 用 `haiku`，其余用 `sonnet`）；缺失的档位回退到 `models.aliases.sonnet` 并给出警告。生成的条目没有为角色指定模型时，reviewer 继承会话模型。档位格式、`screening.roles` 覆盖和路由规则见[中文模型文档](docs/models.zh-CN.md)。
+- 使用 `sr-screener` 筛选时，源端默认的 `sonnet` 会按角色解析到对应档位（`ADJ`/`FTADJ` 用 `opus`，`QC` 用 `haiku`，其余用 `sonnet`）；缺失的档位回退到 `models.aliases.sonnet` 并给出警告。生成的条目没有为角色指定模型时，reviewer 继承会话模型。档位格式、`screening.roles` 覆盖和路由规则见[中文模型文档](docs/models.zh-CN.md)，完整插件配置示例见[安装文档](docs/installation.md#plugin-options-and-models)。
 - 模型映射文件只写 provider/model，不要写 API key。
 
 ---

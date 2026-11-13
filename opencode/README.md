@@ -71,9 +71,12 @@ PowerShell from the ARS checkout and replace the two example paths.
 
    `sonnet` is the source hint for the **balanced / mid-tier** model; it does
    not mean you must use Claude. 12 of the 16 `/ars-*` commands declare it, and
-   the other four inherit the session model. Screening roles, the high/low
-   tiers, routing rules and the full JSONC example are in
-   [Model selection](docs/models.md).
+   the other four inherit the session model. This file is an installation input
+   only: the installer writes it into the plugin options in `opencode.json`
+   (`plugins[].options`); the adapter does not read it at runtime. Screening
+   roles, the high/low tiers and routing rules are in
+   [Model selection](docs/models.md); the final plugin-options example is in
+   [Installation](docs/installation.md#plugin-options-and-models).
 
 5. **Preview the installation.** This writes nothing.
 
@@ -160,8 +163,9 @@ which is same-provider only. If the session and the mapped model are on
 different providers, the command blocks with an actionable message. Native
 agents inherit the source model unless `models.agents.<id>` is set.
 
-Screening tier defaults, the full JSONC example and the exact routing rules are
-in [Model selection and mapping](docs/models.md).
+Screening tier defaults and the exact routing rules are in [Model selection and
+mapping](docs/models.md); the final plugin-options example is in
+[Installation](docs/installation.md#plugin-options-and-models).
 
 ## Use
 

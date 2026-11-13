@@ -22,7 +22,9 @@ ARS 最初是为 Claude Code 写的，命令文件里会出现 `sonnet`、`opus`
 
 以上是建议，不是强制。如果你把高端模型映射到 `sonnet`，那 12 个声明了 `sonnet` 的命令会用高端模型（其中 3 个 CLI 包装命令不经过模型路由）；映射便宜模型就用便宜模型。按你自己的质量、延迟和成本要求选择。
 
-## 映射文件
+## 安装输入：`ars-models.json`
+
+`ars-models.json` 只是安装输入，不是运行时配置文件。安装完成后适配器不会再读它；安装器会把内容写进 `opencode.json`（或 `opencode.jsonc`）的插件 options。这个文件是项目级的 `opencode.json` / `.opencode/opencode.json(c)`，或全局的 `~/.config/opencode/opencode.json(c)`。直接编辑它时不需要 `ars-models.json`，也不要同时维护两份。
 
 安装器的 `--models` 值会写进插件 options，所以重载后同一套映射仍然有效：
 
@@ -130,44 +132,6 @@ node "C:/work/academic-research-skills/opencode/install.ts" install `
 - 原生代理保持源端继承，除非设置了 `models.agents.<id>`；安装检查会验证生效的 agent 模型。
 - 状态工具记录最近实际应用的路由。
 
-## 完整插件配置示例
+## 映射最终写到哪里
 
-下面的例子给 12 个声明了 `sonnet` 的命令配均衡模型，给一个可选的、声明 `opus` 的自定义命令配高端模型，并通过 `models.agents` 给 `synthesis-agent` 配高端模型，同时用 `screening.roles` 覆盖筛选角色。这是模板，不是必须照抄的分配：不写 `screening.roles` 时会按上文的档位分布解析。
-
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "./academic-research-skills/opencode",
-      "options": {
-        "repoRoot": "C:/work/academic-research-skills",
-        "models": {
-          "aliases": {
-            // 中端 / 均衡：12 个声明了 `sonnet` 的命令。
-            "sonnet": { "providerID": "your-provider", "model": "your-balanced-model" },
-            // 高端 / 最强：声明 `opus` 的自定义命令、代理，以及 `ADJ`/`FTADJ` 筛选档位。
-            "opus": { "providerID": "your-provider", "model": "your-strongest-model" }
-          },
-          "agents": {
-            // 可选覆盖；不写就继承会话模型。
-            "synthesis-agent": { "providerID": "your-provider", "model": "your-strongest-model" }
-          }
-        },
-        "screening": {
-          "roles": {
-            "A": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "B": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "ADJ": { "providerID": "your-provider", "model": "your-strongest-model" },
-            "QC": { "providerID": "your-provider", "model": "your-fast-model" },
-            "FTA": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "FTB": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "FTADJ": { "providerID": "your-provider", "model": "your-strongest-model" }
-          }
-        }
-      }
-    }
-  ]
-}
-```
-
-生成的 `screening_config.json` 为某个角色写 `sonnet` 时，派发器需要 `models.aliases.sonnet`；想使用上面的档位分布，还要配 `opus` 和 `haiku`。它会按规划阶段存下的引用切换每个子会话的模型，读回生效模型，一致才发送 prompt。某个角色的模型无法解析、或宿主不提供该模型时，会在任何评审调用前阻断派发。
+完整插件条目和手动配置示例见 [installation.md](installation.md#plugin-options-and-models)。不要同时维护两份相同的映射。

@@ -31,7 +31,14 @@ This is guidance, not enforcement. If you map a high-end model to `sonnet`, the
 route models); if you map a cheap model there, they will use that one. Choose by
 your own quality, latency and cost requirements.
 
-## Mapping file
+## Installer input: `ars-models.json`
+
+`ars-models.json` is an installation input, not a runtime config file. The
+adapter never reads it after installation; the installer copies its contents
+into the plugin options in `opencode.json` (or `opencode.jsonc`). That file is
+the project `opencode.json` / `.opencode/opencode.json(c)`, or the global
+`~/.config/opencode/opencode.json(c)`. If you edit it directly, skip this file
+and do not maintain both copies.
 
 The installer's `--models` value is written into the plugin options, so the same
 mappings work after a reload:
@@ -182,52 +189,8 @@ it does not reset them. Store credentials through OpenCode, never in this file.
   and the installation check verifies the effective agent model.
 - The status tool records the last routes actually applied.
 
-## Full plugin options example
+## Where the mapping is stored
 
-This example maps a balanced model for the 12 commands that declare `sonnet`, a
-high-end model for an optional custom command that declares `opus` and for
-`synthesis-agent` through `models.agents`, and role-specific screening tiers. It
-is a template, not a required assignment:
-
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "./academic-research-skills/opencode",
-      "options": {
-        "repoRoot": "C:/work/academic-research-skills",
-        "models": {
-          "aliases": {
-            // Balanced / mid-tier: the 12 commands that declare `sonnet`.
-            "sonnet": { "providerID": "your-provider", "model": "your-balanced-model" },
-            // High-end / strongest: custom `opus` commands, agents, and the `ADJ`/`FTADJ` screening tier.
-            "opus": { "providerID": "your-provider", "model": "your-strongest-model" }
-          },
-          "agents": {
-            // Optional override; without it the agent inherits the session model.
-            "synthesis-agent": { "providerID": "your-provider", "model": "your-strongest-model" }
-          }
-        },
-        "screening": {
-          "roles": {
-            "A": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "B": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "ADJ": { "providerID": "your-provider", "model": "your-strongest-model" },
-            "QC": { "providerID": "your-provider", "model": "your-fast-model" },
-            "FTA": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "FTB": { "providerID": "your-provider", "model": "your-balanced-model" },
-            "FTADJ": { "providerID": "your-provider", "model": "your-strongest-model" }
-          }
-        }
-      }
-    }
-  ]
-}
-```
-
-When the emitted `screening_config.json` names `sonnet` for a role, the
-dispatcher needs `models.aliases.sonnet`, plus the `opus` and `haiku` aliases if
-you want the tier layout above. It switches each child session to the model the
-plan stored for that role, reads the effective model back, and prompts only if
-it matches. A role whose model cannot be resolved, or names a model the host
-does not offer, blocks the dispatch before any reviewer call.
+To see the exact plugin entry the installer writes, or to configure it by hand,
+see [installation.md](installation.md#plugin-options-and-models). Do not keep a
+second copy of the same mappings.
