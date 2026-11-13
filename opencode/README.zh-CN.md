@@ -2,6 +2,8 @@
 
 > [English](README.md) | **简体中文**
 
+> 本文件是英文版的中文翻译；如两者不一致，以英文版为准。
+
 一个薄适配层，让 Academic Research Skills（ARS）插件可以在 OpenCode V2 中使用，**不复制、不修改 ARS 核心**。Claude Code 文件仍是唯一事实来源；这个包只在运行时翻译宿主契约。
 
 已验证基线（只实际跑过这组组合）：
