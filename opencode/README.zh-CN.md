@@ -11,7 +11,7 @@
 - 4 个 ARS 子代理
 - 写入范围保护（防止代理越过当前阶段改文件）
 
-> 本文是面向使用者的简明安装指南；完整技术细节、权限矩阵、筛选派发协议见[英文版](README.md)。
+> 本文是面向使用者的简明安装指南；完整技术细节在文末的[技术文档](#10-技术文档)中。
 
 ---
 
@@ -63,6 +63,8 @@ npm --prefix opencode ci
 ```
 
 这一步只安装适配器自己的 Node 依赖，不会改 ARS 源码。
+
+如果 `npm ci` 失败，先确认：Node 是 24+、当前目录是 ARS 仓库根目录、`opencode/package-lock.json` 存在。
 
 ---
 
@@ -131,7 +133,7 @@ C:\research\ars-models.json
 
 - 16 个 ARS 命令都声明了 `sonnet`，所以 **`sonnet` 至少要映射**。
 - 如果以后你自己加了使用 `opus` 的命令或代理，再加 `opus` 映射。
-- 使用 `sr-screener` 筛选时，还需要在同一个文件里配置 7 个筛选角色（`A`、`B`、`ADJ`、`QC`、`FTA`、`FTB`、`FTADJ`）；格式见[英文版 Models 一节](README.md#models)。
+- 使用 `sr-screener` 筛选时，还需要配置 7 个角色（`A`、`B`、`ADJ`、`QC`、`FTA`、`FTB`、`FTADJ`）；格式和路由规则见[模型文档](docs/models.md)。
 - 模型映射文件只写 provider/model，不要写 API key。
 
 ---
@@ -149,9 +151,9 @@ C:\research\ars-models.json
 
 ### 5.1 插件方式（推荐）
 
-安装分三步：预览 → 正式安装 → 检查。
+安装分三步。
 
-#### 5.1.1 预览（不会写任何文件）
+**第 1 步：预览（不会写任何文件）**
 
 ```powershell
 node "C:\work\academic-research-skills\opencode\install.ts" install --channel plugin --scope project --project "C:\research\my-project"
@@ -159,7 +161,7 @@ node "C:\work\academic-research-skills\opencode\install.ts" install --channel pl
 
 预览会告诉你准备改哪些配置、复制哪些文件、有没有冲突。**先读一遍输出。**
 
-#### 5.1.2 正式安装
+**第 2 步：正式安装**
 
 确认预览无误后运行：
 
@@ -169,7 +171,7 @@ node "C:\work\academic-research-skills\opencode\install.ts" install --channel pl
 
 `--apply` 才会真正写入。没有它，命令始终只是预览。
 
-#### 5.1.3 检查并重载
+**第 3 步：检查并重载**
 
 ```powershell
 node "C:\work\academic-research-skills\opencode\install.ts" check --channel plugin --scope project --project "C:\research\my-project"
@@ -182,6 +184,12 @@ opencode reload
 ```
 
 如果 `reload` 不生效，直接重启 OpenCode。
+
+安装成功后应该能看到：
+
+- `check` 退出码为 `0`；
+- 在 OpenCode 里输入 `/`，能看到 `ars-*` 命令；
+- `/ars-plan` 能正常开始对话，而不是提示命令不存在。
 
 ### 5.2 只安装技能（skills）
 
@@ -216,6 +224,8 @@ node "C:\work\academic-research-skills\opencode\install.ts" install --channel pl
 ```
 
 全局安装会写 `~/.config/opencode/opencode.json`，所有项目共用同一份 ARS 检出。它不是“每个项目自动切换不同 checkout”的机制。
+
+skills 渠道也支持 `--scope global`；把 `--channel plugin` 换成 `--channel skills` 即可，但同样没有 `/ars-*` 命令和写入保护。
 
 ---
 
@@ -252,12 +262,6 @@ opencode run --model "commandcode/claude-sonnet-5" "/ars-plan 帮我规划一篇
 ```
 
 把模型换成你自己的 provider/model。
-
-### 怎么确认真的装好了？
-
-- `check` 退出码为 0；
-- 在 OpenCode 里输入 `/`，能看到 `ars-*` 命令；
-- `/ars-plan` 能正常开始对话，而不是提示命令不存在。
 
 ---
 
@@ -308,18 +312,6 @@ C:\research\ars-models.json
 - 是否装了 PyYAML；
 - 是否传了 `--passport-path`，或者设置了 `ARS_PASSPORT_PATH`。
 
-### 安装被拒绝：不能装进 ARS 源码目录
-
-`--project` 要指向你的研究项目，不是 ARS checkout。只有适配器开发才使用 `--allow-checkout`。
-
-### `npm ci` 失败
-
-确认：
-
-- 当前目录是 ARS 仓库根目录；
-- `opencode/package-lock.json` 存在；
-- Node 版本是 24+。
-
 ### 装了 skills 方式，但没有 `/ars-*` 命令
 
 这是正常的。skills 方式只复制技能，不安装命令和写入保护。需要完整功能请用 `--channel plugin`。
@@ -332,4 +324,16 @@ C:\research\ars-models.json
 - 完整多代理编排、PDF 导出、Windows durable ledger、Claude/Pi 运行时回归仍未验证；这些是已记录的限制，不是“已经支持”。
 - `--channel skills` 没有 `/ars-*` 命令、插件工具和写入保护。
 
-更多技术细节、权限矩阵、筛选派发和模型路由说明，见[英文版](README.md)。
+---
+
+## 10. 技术文档
+
+中文版只保留安装和使用步骤。完整技术细节在英文文档：
+
+- [安装参考](docs/installation.md) — 依赖、安装渠道、选项、路径、手动安装
+- [模型映射与路由](docs/models.md) — 别名、筛选角色、路由规则
+- [写入范围与权限](docs/permissions.md) — 权限矩阵、阶段围栏、降级模式
+- [命令与 CLI 包装器](docs/commands.md) — 命令渲染与参数校验
+- [筛选派发](docs/screening.md) — sr-screener 派发、审批与重试
+- [更新、卸载与迁移](docs/lifecycle.md) — 生命周期与所有权规则
+- [开发与验证](docs/development.md) — 测试、审计状态与未验证项
