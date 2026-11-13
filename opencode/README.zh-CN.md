@@ -88,7 +88,19 @@ mkdir "C:\research\my-project"
 
 ## 4. 配置模型
 
-OpenCode 没有 Claude 的 `sonnet` / `opus` 别名，所以需要告诉适配器：ARS 命令里的 `sonnet` 应该用哪个真实模型。
+ARS 源文件里会出现 `sonnet`、`opus` 这样的 Claude 模型名。你**不需要使用 Claude，也不需要知道这些产品名**；在这个适配器里，它们只是“能力档位”的提示：
+
+| 源端提示 | 按什么理解 | 说明 |
+|---|---|---|
+| `sonnet` | **中端 / 均衡** | 12 个 `/ars-*` 命令声明它；映射到你 provider 的中端模型 |
+| `opus` | **高端 / 最强** | 当前命令没有声明；只有你新增声明 `opus` 的自定义命令或代理时才需要 |
+| `haiku` | **低端 / 快速、低成本** | 当前命令没有声明；只有你新增声明 `haiku` 的自定义命令或代理时才需要 |
+
+代理覆盖（`models.agents.<id>`）和筛选角色（`screening.roles.<role>`）填写的是**直连模型引用**，不会读取这些别名。
+
+这 12 个声明 `sonnet` 的命令里有 3 个是 CLI 包装命令（`ars-cache-invalidate`、`ars-mark-read`、`ars-unmark-read`），它们不经过模型路由。
+
+配置里的键仍然叫 `sonnet`，因为源端就是这么写的；它**不表示**“必须使用 Claude Sonnet”。
 
 先列出本机可用模型：
 
@@ -105,7 +117,7 @@ provider/model
 例如：
 
 ```text
-commandcode/claude-sonnet-5
+your-provider/your-balanced-model
 ```
 
 然后在项目外创建一个模型映射文件，例如：
@@ -120,20 +132,20 @@ C:\research\ars-models.json
 {
   "aliases": {
     "sonnet": {
-      "providerID": "commandcode",
-      "model": "claude-sonnet-5"
+      "providerID": "your-provider",
+      "model": "your-balanced-model"
     }
   }
 }
 ```
 
-把 `commandcode` 和 `claude-sonnet-5` 换成你 `opencode models` 里真实存在、并且和当前会话同一 provider 的模型。
+把 `your-provider` 和 `your-balanced-model` 换成你 `opencode models` 里真实存在、并且和当前会话同一 provider 的模型。
 
 说明：
 
-- 16 个 ARS 命令都声明了 `sonnet`，所以 **`sonnet` 至少要映射**。
-- 如果以后你自己加了使用 `opus` 的命令或代理，再加 `opus` 映射。
-- 使用 `sr-screener` 筛选时，还需要配置 7 个角色（`A`、`B`、`ADJ`、`QC`、`FTA`、`FTB`、`FTADJ`）；格式和路由规则见[模型文档](docs/models.md)。
+- 16 个 ARS 命令中有 **12 个**声明了 `sonnet`，所以 `sonnet` 至少要映射；剩下 4 个继承当前会话模型。
+- 如果你自己新增了声明 `opus` 或 `haiku` 的命令或代理，再补对应档位。
+- 使用 `sr-screener` 筛选时，还需要配置 7 个角色（`A`、`B`、`ADJ`、`QC`、`FTA`、`FTB`、`FTADJ`）；各档位建议、格式和路由规则见[中文模型文档](docs/models.zh-CN.md)。
 - 模型映射文件只写 provider/model，不要写 API key。
 
 ---
@@ -258,7 +270,7 @@ opencode
 也可以不进入交互界面，直接跑一次：
 
 ```powershell
-opencode run --model "commandcode/claude-sonnet-5" "/ars-plan 帮我规划一篇关于 AI 辅助学术写作的论文"
+opencode run --model "your-provider/your-balanced-model" "/ars-plan 帮我规划一篇关于 AI 辅助学术写作的论文"
 ```
 
 把模型换成你自己的 provider/model。
@@ -293,13 +305,13 @@ node "C:\work\academic-research-skills\opencode\install.ts" uninstall --channel 
 
 ### 命令提示 `no OpenCode mapping`
 
-说明 `sonnet` 没有映射。检查：
+说明中端档位（配置键 `sonnet`）没有映射。检查：
 
 ```text
 C:\research\ars-models.json
 ```
 
-里面要有 `aliases.sonnet`，并且 `providerID` / `model` 是真实存在的。
+里面要有 `aliases.sonnet`，并且 `providerID` / `model` 是真实存在的。`sonnet` 只是源端的能力提示，不是要求使用 Claude Sonnet。
 
 ### 命令提示跨 provider
 
@@ -328,10 +340,11 @@ C:\research\ars-models.json
 
 ## 10. 技术文档
 
-中文版只保留安装和使用步骤。完整技术细节在英文文档：
+中文版只保留安装和使用步骤。模型文档有中文版，其余为英文技术文档：
 
+- [模型选择与映射（中文）](docs/models.zh-CN.md) — 三档模型、别名、筛选角色、路由规则
+- [Model selection and mapping (English)](docs/models.md) — 英文原文
 - [安装参考](docs/installation.md) — 依赖、安装渠道、选项、路径、手动安装
-- [模型映射与路由](docs/models.md) — 别名、筛选角色、路由规则
 - [写入范围与权限](docs/permissions.md) — 权限矩阵、阶段围栏、降级模式
 - [命令与 CLI 包装器](docs/commands.md) — 命令渲染与参数校验
 - [筛选派发](docs/screening.md) — sr-screener 派发、审批与重试

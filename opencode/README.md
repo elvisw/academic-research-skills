@@ -64,14 +64,16 @@ PowerShell from the ARS checkout and replace the two example paths.
    ```json
    {
      "aliases": {
-       "sonnet": { "providerID": "your-provider", "model": "your-model" }
+       "sonnet": { "providerID": "your-provider", "model": "your-balanced-model" }
      }
    }
    ```
 
-   The 16 source commands declare `model: sonnet`, so `sonnet` is the minimum
-   mapping. Screening roles, routing rules and the full JSONC example are in
-   [Model mapping](docs/models.md).
+   `sonnet` is the source hint for the **balanced / mid-tier** model; it does
+   not mean you must use Claude. 12 of the 16 `/ars-*` commands declare it, and
+   the other four inherit the session model. Screening roles, the high/low
+   tiers, routing rules and the full JSONC example are in
+   [Model selection](docs/models.md).
 
 5. **Preview the installation.** This writes nothing.
 
@@ -131,18 +133,31 @@ conservative installer behavior and the manual fallback are in the
 
 ## Models
 
-OpenCode has no Claude `sonnet`/`opus` aliases, so ARS command aliases must be
-mapped explicitly. The minimal file is the one in Quick install step 4; pass it
-with `--models`. A missing mapping blocks that command before dispatch rather
-than silently inheriting the session model.
+ARS source files use Claude model names as **capability hints**, not as a
+requirement to use Claude. Think of them as tiers:
+
+- `sonnet` — balanced / mid-tier. 12 of the 16 `/ars-*` commands declare it;
+  of those, three CLI wrappers do not apply model routing.
+- `opus` — high-end / strongest. No current command declares it; optional for
+  custom commands or agents whose frontmatter requests `opus`.
+- `haiku` — low-end / fast and cheap. No current command declares it; optional
+  for custom commands or agents whose frontmatter requests `haiku`.
+
+Agent overrides (`models.agents.<id>`) and screening roles
+(`screening.roles.<role>`) are direct model references; they do not consume these
+alias keys.
+
+Map each hint to a model your provider actually offers. The config key stays
+`sonnet` because that is the source hint; it does not mean “Claude Sonnet.” The
+minimal file is the one in Quick install step 4; pass it with `--models`.
 
 Command aliases are routed per request through `experimental.model.resolve`,
 which is same-provider only. If the session and the mapped model are on
 different providers, the command blocks with an actionable message. Native
 agents inherit the source model unless `models.agents.<id>` is set.
 
-Screening roles, the full JSONC example and the exact routing rules are in
-[Model mapping and routing](docs/models.md).
+Tier suggestions for screening roles, the full JSONC example and the exact
+routing rules are in [Model selection and mapping](docs/models.md).
 
 ## Use
 
@@ -187,7 +202,8 @@ switching, relocation and retry behavior are in
 
 ## Troubleshooting
 
-- **`no OpenCode mapping`** — add `models.aliases.sonnet` to the models file.
+- **`no OpenCode mapping`** — add `models.aliases.sonnet` (the balanced-tier
+  mapping) to the models file.
 - **Cross-provider route** — select a session model on the same provider as the
   mapping, or change the mapping.
 - **`ars-mark-read` / `ars-unmark-read` fails** — install PyYAML and pass
@@ -208,7 +224,7 @@ switching, relocation and retry behavior are in
 ## Technical documentation
 
 - [Installation reference](docs/installation.md) — dependencies, channels, options, paths, manual fallback
-- [Model mapping and routing](docs/models.md) — aliases, screening roles, routing rules
+- [Model selection and mapping](docs/models.md) — capability tiers, aliases, screening roles, routing rules ([简体中文](docs/models.zh-CN.md))
 - [Write scope and permissions](docs/permissions.md) — native matrix, phase fence, degraded modes
 - [Commands and CLI wrappers](docs/commands.md) — command rendering and argv validation
 - [Screening dispatch](docs/screening.md) — sr-screener dispatch, approval and retries
