@@ -154,7 +154,7 @@ C:\research\ars-models.json
 - 16 个 ARS 命令中有 **12 个**声明了 `sonnet`，所以 `sonnet` 至少要映射；剩下 4 个继承当前会话模型。
 - `opus` 和 `haiku` 是可选档位，示例里先列出来方便你看到三档的写法。如果暂时不用，可以删掉对应条目；保留就必须填真实模型，不能留着 `your-strongest-model` 这样的占位符。
 - 如果你自己新增了声明 `opus` 或 `haiku` 的命令或代理，再补对应档位。
-- 使用 `sr-screener` 筛选时，还需要配置 7 个角色（`A`、`B`、`ADJ`、`QC`、`FTA`、`FTB`、`FTADJ`）；各档位建议、格式和路由规则见[中文模型文档](docs/models.zh-CN.md)。
+- 使用 `sr-screener` 筛选时，如果生成的筛选配置为某个角色指定了模型，就需要配置该角色；没有指定时使用 reviewer 的生效模型（默认继承会话模型）。各档位建议、格式和路由规则见[中文模型文档](docs/models.zh-CN.md)。
 - 模型映射文件只写 provider/model，不要写 API key。
 
 ---

@@ -72,6 +72,19 @@ role if that is simpler. The seven role names are `A`, `B`, `ADJ`, `QC`, `FTA`,
 `FTB` and `FTADJ`; the installer validates each reference and writes it into
 `options.screening.roles`.
 
+**What happens if you do not configure roles?** It depends on whether the
+emitted screening config names a model for the role:
+
+- **No model named:** no mapping is needed. The reviewer uses its effective
+  model; by default it inherits the session model, or uses a
+  `screening-reviewer-agent` override if you set one.
+- **A model is named:** that role must be mapped. A missing mapping blocks
+  dispatch before any reviewer call and reports `blocked models` with the
+  missing role. It does **not** silently fall back to the session model.
+
+Omitting `screening.roles` therefore does not block installation; it only blocks
+a screening dispatch when the emitted config requires a role model.
+
 Screening roles and `models.agents.<id>` are **direct model references**, not
 `models.aliases` keys. `haiku` or `opus` aliases do not apply to them.
 

@@ -63,6 +63,13 @@ node "C:/work/academic-research-skills/opencode/install.ts" install --channel pl
 
 这些只是建议，不是自动分配。如果你希望简单，也可以所有角色用同一个模型。七个角色名是 `A`、`B`、`ADJ`、`QC`、`FTA`、`FTB`、`FTADJ`；安装器会校验每个引用并写入 `options.screening.roles`。这里的每个角色填写的是**直连模型引用**，不是 `models.aliases` 的档位键。
 
+**完全不配置这些角色会怎样？** 取决于生成的筛选配置有没有为角色指定模型：
+
+- **没有指定模型：** 不需要该角色的映射。reviewer 使用自己的生效模型；默认继承当前会话模型，如果你给 `screening-reviewer-agent` 配了模型覆盖，则使用那个覆盖。
+- **指定了模型：** 该角色必须有映射。缺失时会在任何评审调用派发前阻断，并报告 `blocked models` 及缺少映射的角色，**不会静默回退到会话模型**。
+
+所以不配置 `screening.roles` 不会阻止安装；它只会在筛选配置要求某个角色模型时阻止该次筛选派发。
+
 后续 update/check 省略 `--models` 会保留已持久化映射，不会重置。凭据请通过 OpenCode 存储，不要写进这个文件。
 
 ## 哪些配置会消费映射
