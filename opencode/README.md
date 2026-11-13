@@ -65,6 +65,121 @@ background job, scheduled maintenance, publish, commit, or paid run.
 - Full-text screening needs readable PDF paths; title/abstract screening needs
   the batch files under `<work>/batches/`.
 
+## Quick install (from zero)
+
+This is the shortest path to a project-scoped plugin install on Windows. Run
+PowerShell from the ARS checkout and replace the two example paths.
+
+1. **Check the prerequisites.**
+
+   ```powershell
+   node --version       # must be 24+
+   opencode --version   # tested with 2.2.7; 2.3.0 is newer and untested
+   py -3 --version
+   py -3 -c "import yaml; print(yaml.__version__)"
+   ```
+
+   If PyYAML is missing for that interpreter, install it with
+   `py -3 -m pip install pyyaml`. Without Python the write guard degrades
+   visibly; without PyYAML the mark/unmark CLI commands fail.
+
+2. **Install the adapter dependencies.**
+
+   ```powershell
+   cd "C:/work/academic-research-skills"
+   npm --prefix opencode ci
+   ```
+
+3. **Choose the project that will use ARS.** The examples use
+   `C:/research/my-project`; it must already exist and must not be the ARS
+   checkout itself.
+
+4. **Find a model ID and create the mapping file.**
+
+   ```powershell
+   opencode models
+   ```
+
+   Each line is `provider/model`. Pick a model that is available on the same
+   provider as the session you will use. Create `C:/research/ars-models.json`:
+
+   ```json
+   {
+     "aliases": {
+       "sonnet": { "providerID": "your-provider", "model": "your-model" }
+     }
+   }
+   ```
+
+   The 16 source commands declare `model: sonnet`, so `sonnet` is the minimum
+   mapping. Add `opus` only if you later add a command or agent that uses it.
+   If you use screening, add the seven roles (`A`, `B`, `ADJ`, `QC`, `FTA`,
+   `FTB`, `FTADJ`) under `screening.roles` as shown in [Models](#models).
+
+5. **Preview the installation.** This writes nothing.
+
+   ```powershell
+   node "C:/work/academic-research-skills/opencode/install.ts" install `
+     --channel plugin --scope project `
+     --project "C:/research/my-project"
+   ```
+
+   Read the planned paths and any collision. The installer refuses ambiguous
+   or malformed configuration instead of guessing.
+
+6. **Apply after reviewing the preview.**
+
+   ```powershell
+   node "C:/work/academic-research-skills/opencode/install.ts" install `
+     --channel plugin --scope project `
+     --project "C:/research/my-project" `
+     --models "C:/research/ars-models.json" --apply
+   ```
+
+7. **Verify and reload.**
+
+   ```powershell
+   node "C:/work/academic-research-skills/opencode/install.ts" check `
+     --channel plugin --scope project `
+     --project "C:/research/my-project"
+   ```
+
+   `check` must exit `0`. Then run `opencode reload`, or restart the host.
+
+8. **Run a command.**
+
+   ```powershell
+   cd "C:/research/my-project"
+   opencode
+   ```
+
+   In the TUI, type a command such as
+   `/ars-plan help me plan a paper on ...`. For a one-shot run:
+
+   ```powershell
+   opencode run --model "your-provider/your-model" "/ars-plan help me plan a paper on ..."
+   ```
+
+9. **Skills-only alternative.** This installs the five skill directories and
+   the reviewer, but no commands, plugin tools or write guard:
+
+   ```powershell
+   node "C:/work/academic-research-skills/opencode/install.ts" install `
+     --channel skills --scope project `
+     --project "C:/research/my-project" --apply
+   ```
+
+10. **Global alternative.** Replace `--scope project` with `--scope global`
+    and keep the same `--project` only when you want to preview against that
+    project. A global profile is one fixed checkout/profile, not an automatic
+    per-project clone selector.
+
+If a command is blocked with `no OpenCode mapping`, fix
+`models.aliases.sonnet`. If it reports a cross-provider route, the session and
+the alias are on different providers; select a session model on the mapped
+provider. `install` without `--apply` is always a preview, and `check` never
+writes.
+
 ## Installation channels
 
 The installer completes the routes the original project documents. Both
