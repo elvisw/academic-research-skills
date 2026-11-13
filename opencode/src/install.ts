@@ -135,8 +135,11 @@ export interface InstallRequest {
   projectRoot: string;
   packageRoot?: string;
   models?: AdapterOptions["models"];
+  screeningRoles?: Record<string, ModelRef>;
   apply?: boolean;
   adoptLegacy?: boolean;
+  /** Explicit opt-in to install into the ARS checkout itself (adapter development). */
+  allowCheckout?: boolean;
   home?: string;
   env?: NodeJS.ProcessEnv;
   now?: Date;
@@ -326,6 +329,9 @@ function readManifestFile(path: string): InstallManifest | null {
   }
   const manifest = value as Partial<InstallManifest>;
   if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
     manifest.installer !== INSTALLER_ID ||
     manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION ||
     !manifest.scope ||
@@ -340,19 +346,23 @@ function readManifestFile(path: string): InstallManifest | null {
   return manifest as InstallManifest;
 }
 
-function scanManifests(stateRoot: string): InstallManifest[] {
-  if (!existsSync(stateRoot)) return [];
+function scanManifests(stateRoot: string): {
+  manifests: InstallManifest[];
+  unreadable: string[];
+} {
+  if (!existsSync(stateRoot)) return { manifests: [], unreadable: [] };
   const found: InstallManifest[] = [];
+  const unreadable: string[] = [];
   for (const file of readdirSync(stateRoot)) {
     if (!/^manifest-.*\.json$/.test(file)) continue;
     try {
       const manifest = readManifestFile(join(stateRoot, file));
       if (manifest) found.push(manifest);
-    } catch {
-      // A malformed manifest is reported by the specific path, not skipped.
+    } catch (error) {
+      unreadable.push(`${toPosix(join(stateRoot, file))}: ${(error as Error).message}`);
     }
   }
-  return found;
+  return { manifests: found, unreadable };
 }
 
 export function resolveScope(request: InstallRequest, packageRoot: string): ScopePaths {
@@ -364,7 +374,14 @@ export function resolveScope(request: InstallRequest, packageRoot: string): Scop
   let scope = request.scope;
   if (!scope) {
     if (request.action === "update" || request.action === "uninstall") {
-      const matches = scanManifests(stateRoot).filter(
+      const scan = scanManifests(stateRoot);
+      if (scan.unreadable.length) {
+        throw new InstallError(
+          `ownership manifests could not be read: ${scan.unreadable.join("; ")}; ` +
+            "refusing to infer a scope from incomplete records. Pass --scope explicitly or fix the listed files.",
+        );
+      }
+      const matches = scan.manifests.filter(
         (manifest) =>
           manifest.installer === INSTALLER_ID &&
           manifest.channel === request.channel &&
@@ -492,7 +509,11 @@ function editConfigChecked(
 }
 
 function readConfigText(path: string): string | null {
-  return existsSync(path) ? readFileSync(path, "utf8") : null;
+  if (!existsSync(path)) return null;
+  const text = readFileSync(path, "utf8");
+  // A BOM is not JSONC. Windows editors still emit one; strip it so the
+  // snapshot and every edit operate on the same text.
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 function assertSnapshot(path: string, expected: string | null): void {
@@ -550,7 +571,13 @@ function skillFiles(root: string, installed = false): { rel: string; digest: str
         walk(absolute, rel);
       } else if (entry.isFile()) {
         files.push({ rel, digest: sha256(readFileSync(absolute)) });
-      } else if (installed && entry.isSymbolicLink()) {
+      } else if (entry.isSymbolicLink()) {
+        if (!installed) {
+          throw new InstallError(
+            `source skill tree contains a symbolic link at ${toPosix(absolute)}; ` +
+              "refusing to install a silently incomplete tree",
+          );
+        }
         files.push({ rel, digest: sha256(`link\0${readlinkSync(absolute)}`) });
       }
     }
@@ -601,10 +628,15 @@ function copySkillTree(source: SkillSource, target: string): void {
   }
 }
 
+export interface ParsedModels {
+  models?: AdapterOptions["models"];
+  screeningRoles?: Record<string, ModelRef>;
+}
+
 export function parseModelsArgument(
   raw: string | undefined,
   cwd: string,
-): AdapterOptions["models"] | undefined {
+): ParsedModels | undefined {
   if (raw === undefined) return undefined;
   const trimmed = raw.trim();
   if (!trimmed) throw new InstallError("--models needs a JSON value or a file path");
@@ -630,12 +662,16 @@ export function parseModelsArgument(
     }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new InstallError("--models must be an object with optional `agents` and `aliases`");
+    throw new InstallError(
+      "--models must be an object with optional `agents`, `aliases` and `screening`",
+    );
   }
-  const allowed = new Set(["agents", "aliases"]);
+  const allowed = new Set(["agents", "aliases", "screening"]);
   for (const key of Object.keys(parsed as Record<string, unknown>)) {
     if (!allowed.has(key)) {
-      throw new InstallError(`--models does not accept ${JSON.stringify(key)}; use agents or aliases`);
+      throw new InstallError(
+        `--models does not accept ${JSON.stringify(key)}; use agents, aliases or screening`,
+      );
     }
   }
   const checkRefs = (value: unknown, label: string): Record<string, ModelRef> => {
@@ -666,13 +702,13 @@ export function parseModelsArgument(
       if (typeof model !== "string" || !model.trim()) {
         throw new InstallError(`--models.${label}.${name}.model must be a non-empty string`);
       }
-      if (variant !== undefined && typeof variant !== "string") {
-        throw new InstallError(`--models.${label}.${name}.variant must be a string`);
+      if (variant !== undefined && (typeof variant !== "string" || !variant.trim())) {
+        throw new InstallError(`--models.${label}.${name}.variant must be a non-empty string`);
       }
       refs[name] = {
         providerID: providerID.trim(),
         model: model.trim(),
-        ...(variant ? { variant } : {}),
+        ...(variant ? { variant: variant.trim() } : {}),
       };
     }
     return refs;
@@ -681,7 +717,29 @@ export function parseModelsArgument(
   const models: AdapterOptions["models"] = {};
   if (record.agents !== undefined) models.agents = checkRefs(record.agents, "agents");
   if (record.aliases !== undefined) models.aliases = checkRefs(record.aliases, "aliases");
-  return models;
+  let screeningRoles: Record<string, ModelRef> | undefined;
+  if (record.screening !== undefined) {
+    const screening = record.screening;
+    if (!screening || typeof screening !== "object" || Array.isArray(screening)) {
+      throw new InstallError("--models.screening must be an object with a `roles` member");
+    }
+    for (const key of Object.keys(screening)) {
+      if (key !== "roles") {
+        throw new InstallError(
+          `--models.screening does not accept ${JSON.stringify(key)}; use roles`,
+        );
+      }
+    }
+    const roles = (screening as Record<string, unknown>).roles;
+    if (roles !== undefined) {
+      const parsedRoles = checkRefs(roles, "screening.roles");
+      if (Object.keys(parsedRoles).length) screeningRoles = parsedRoles;
+    }
+  }
+  return {
+    ...(Object.keys(models).length ? { models } : {}),
+    ...(screeningRoles ? { screeningRoles } : {}),
+  };
 }
 
 function pluginPackagePath(packageRoot: string): string {
@@ -731,11 +789,16 @@ function pluginConfigValue(
   packageRoot: string,
   models: AdapterOptions["models"] | undefined,
   persistedOptions: Record<string, unknown> = {},
+  screeningRoles?: Record<string, ModelRef>,
+  persistedScreening?: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
     package: toPosix(packagePath),
     options: {
       ...persistedOptions,
+      ...(screeningRoles
+        ? { screening: { ...(persistedScreening ?? {}), roles: screeningRoles } }
+        : {}),
       repoRoot: toPosix(packageRoot),
       ...(models && Object.keys(models).length ? { models } : {}),
     },
@@ -749,30 +812,47 @@ function pluginOptionsFromEntry(entry: unknown): Record<string, unknown> {
   return { ...(options as Record<string, unknown>) };
 }
 
+function readModelRefs(value: unknown): Record<string, ModelRef> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const output: Record<string, ModelRef> = {};
+  for (const [name, ref] of Object.entries(value as Record<string, unknown>)) {
+    if (!ref || typeof ref !== "object" || Array.isArray(ref)) continue;
+    const item = ref as Record<string, unknown>;
+    if (typeof item.providerID !== "string" || typeof item.model !== "string") continue;
+    output[name] = {
+      providerID: item.providerID,
+      model: item.model,
+      ...(typeof item.variant === "string" ? { variant: item.variant } : {}),
+    };
+  }
+  return Object.keys(output).length ? output : undefined;
+}
+
 /** Persisted plugin options are the default when --models is not repeated. */
 function modelsFromPluginEntry(entry: unknown): AdapterOptions["models"] | undefined {
   const value = pluginOptionsFromEntry(entry).models;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  const read = (key: "agents" | "aliases"): Record<string, ModelRef> | undefined => {
-    const refs = record[key];
-    if (!refs || typeof refs !== "object" || Array.isArray(refs)) return undefined;
-    const output: Record<string, ModelRef> = {};
-    for (const [name, ref] of Object.entries(refs as Record<string, unknown>)) {
-      if (!ref || typeof ref !== "object" || Array.isArray(ref)) continue;
-      const item = ref as Record<string, unknown>;
-      if (typeof item.providerID !== "string" || typeof item.model !== "string") continue;
-      output[name] = {
-        providerID: item.providerID,
-        model: item.model,
-        ...(typeof item.variant === "string" ? { variant: item.variant } : {}),
-      };
-    }
-    return Object.keys(output).length ? output : undefined;
-  };
-  const agents = read("agents");
-  const aliases = read("aliases");
+  const agents = readModelRefs(record.agents);
+  const aliases = readModelRefs(record.aliases);
   return agents || aliases ? { ...(agents ? { agents } : {}), ...(aliases ? { aliases } : {}) } : undefined;
+}
+
+function screeningRolesFromPluginEntry(
+  entry: unknown,
+): Record<string, ModelRef> | undefined {
+  const screening = pluginOptionsFromEntry(entry).screening;
+  if (!screening || typeof screening !== "object" || Array.isArray(screening)) return undefined;
+  return readModelRefs((screening as Record<string, unknown>).roles);
+}
+
+function mergeScreeningRoles(
+  persisted: Record<string, ModelRef> | undefined,
+  explicit: Record<string, ModelRef> | undefined,
+): Record<string, ModelRef> | undefined {
+  if (!persisted && !explicit) return undefined;
+  const merged = { ...(persisted ?? {}), ...(explicit ?? {}) };
+  return Object.keys(merged).length ? merged : undefined;
 }
 
 /**
@@ -1222,6 +1302,8 @@ interface InstallPlan {
   existingPlugin: { index: number; value: unknown } | undefined;
   persistedPluginOptions: Record<string, unknown>;
   models: AdapterOptions["models"] | undefined;
+  screeningRoles: Record<string, ModelRef> | undefined;
+  persistedScreening: Record<string, unknown> | undefined;
   desiredAgents: NativeAgentSpec[];
   skillSources: SkillSource[];
   state: ApplyState;
@@ -1266,7 +1348,7 @@ function planAgentEntries(plan: InstallPlan): void {
     }
     if (owned && !owned.retained) {
       if (equivalentConfigValue(current, desiredValue)) {
-        plan.nextAgents[agent.id] = { digest: desiredDigest };
+        plan.nextAgents[agent.id] = { digest: digestValue(current) };
         state.operations.push({ kind: "keep", target: `agents.${agent.id}`, detail: "already current" });
       } else if (digestValue(current) === owned.digest) {
         state.configText = editConfigChecked(state.configText, paths.configPath, ["agents", agent.id], desiredValue);
@@ -1324,15 +1406,24 @@ function planAgentEntries(plan: InstallPlan): void {
 
 function planPluginEntry(plan: InstallPlan): void {
   const { request, paths, packageRoot, manifest, models, state } = plan;
+  const plugins = getPath(plan.currentConfig, ["plugins"]);
+  if (plugins !== undefined && !Array.isArray(plugins)) {
+    state.blockers.push(
+      "configuration `plugins` is not an array; refusing to replace existing registrations. " +
+        "Nothing was changed.",
+    );
+    return;
+  }
   const packagePath = pluginPackagePath(packageRoot);
   const desiredPlugin = pluginConfigValue(
     packagePath,
     packageRoot,
     models,
     plan.persistedPluginOptions,
+    plan.screeningRoles,
+    plan.persistedScreening,
   );
   const desiredDigest = digestValue(desiredPlugin);
-  const plugins = getPath(plan.currentConfig, ["plugins"]);
   const existing = plan.existingPlugin;
   if (!existing) {
     const list = Array.isArray(plugins) ? plugins.length : 0;
@@ -1406,6 +1497,14 @@ function planPluginEntry(plan: InstallPlan): void {
 
 function planSkillChannel(plan: InstallPlan): void {
   const { request, paths, packageRoot, manifest, skillSources, state } = plan;
+  const instructions = getPath(plan.currentConfig, ["instructions"]);
+  if (instructions !== undefined && !Array.isArray(instructions)) {
+    state.blockers.push(
+      "configuration `instructions` is not an array; refusing to replace the existing entries. " +
+        "Nothing was changed.",
+    );
+    return;
+  }
   const instructionContent = projectionInstructions(
     paths.scope,
     packageRoot,
@@ -1473,7 +1572,6 @@ function planSkillChannel(plan: InstallPlan): void {
     );
   }
 
-  const instructions = getPath(plan.currentConfig, ["instructions"]);
   const instructionIndex = findInstructionIndex(
     instructions,
     paths.instructionConfigValue,
@@ -1523,6 +1621,18 @@ function planSkillChannel(plan: InstallPlan): void {
         kind: owned ? "update" : "create",
         target: toPosix(target),
         detail: `complete skill tree, ${source.files.length} files`,
+      });
+      continue;
+    }
+    const targetStats = lstatSync(target);
+    if (!targetStats.isDirectory() && !targetStats.isSymbolicLink()) {
+      state.blockers.push(
+        `skill target ${toPosix(target)} exists and is not a directory; refusing to replace it`,
+      );
+      state.operations.push({
+        kind: "blocked",
+        target: toPosix(target),
+        detail: "target exists but is not a skill directory",
       });
       continue;
     }
@@ -1617,8 +1727,11 @@ function composeInstallManifest(plan: InstallPlan): void {
       nextSkills[source.name] = { dir: target, digest: source.digest };
       continue;
     }
+    const targetStats = existsSync(target) ? lstatSync(target) : null;
     const alreadyIdentical =
-      existsSync(target) && skillTreeDigest(target) === source.digest;
+      targetStats !== null &&
+      (targetStats.isDirectory() || targetStats.isSymbolicLink()) &&
+      skillTreeDigest(target) === source.digest;
     if (alreadyIdentical) {
       // Reuse without ownership: nothing to record.
       continue;
@@ -1645,7 +1758,9 @@ function composeInstallManifest(plan: InstallPlan): void {
       Object.entries(plan.nextAgents).filter(([key]) => key !== "__pluginDigest"),
     ),
     skills: nextSkills,
-    pendingRemovals: manifest?.pendingRemovals ?? [],
+    pendingRemovals: (manifest?.pendingRemovals ?? []).filter(
+      (name) => !state.skillRemoves.some((remove) => remove.name === name),
+    ),
   };
   const pluginDigestEntry = plan.nextAgents.__pluginDigest;
   delete plan.nextAgents.__pluginDigest;
@@ -1706,11 +1821,13 @@ function inspectChannelSources(input: {
   env: NodeJS.ProcessEnv;
   catalog: Catalog;
   persistedModels: AdapterOptions["models"] | undefined;
+  persistedScreeningRoles: Record<string, ModelRef> | undefined;
   blockers: string[];
   warnings: string[];
   operations: InstallOperation[];
 }): {
   models: AdapterOptions["models"] | undefined;
+  screeningRoles: Record<string, ModelRef> | undefined;
   desiredAgents: NativeAgentSpec[];
   skillSources: SkillSource[];
 } {
@@ -1722,6 +1839,7 @@ function inspectChannelSources(input: {
     env,
     catalog,
     persistedModels,
+    persistedScreeningRoles,
     blockers,
     warnings,
     operations,
@@ -1729,6 +1847,10 @@ function inspectChannelSources(input: {
   const models =
     request.channel === "plugin"
       ? mergeModels(persistedModels, request.models)
+      : undefined;
+  const screeningRoles =
+    request.channel === "plugin"
+      ? mergeScreeningRoles(persistedScreeningRoles, request.screeningRoles)
       : undefined;
   const desiredAgentResult = loadNativeAgents(
     packageRoot,
@@ -1784,9 +1906,24 @@ function inspectChannelSources(input: {
         }
       }
     }
+    if (screeningRoles) {
+      const knownRoles = new Set(["A", "B", "ADJ", "QC", "FTA", "FTB", "FTADJ"]);
+      for (const [role, ref] of Object.entries(screeningRoles)) {
+        if (!knownRoles.has(role)) {
+          warnings.push(
+            `screening.roles.${role} is not a screening role; expected A, B, ADJ, QC, FTA, FTB or FTADJ`,
+          );
+        }
+        if (!modelExists(ref, [])) {
+          warnings.push(
+            `screening.roles.${role} -> ${ref.providerID}/${ref.model} cannot be proven available offline; the host reports it at load time`,
+          );
+        }
+      }
+    }
   }
 
-  return { models, desiredAgents, skillSources };
+  return { models, screeningRoles, desiredAgents, skillSources };
 }
 
 export async function runInstaller(request: InstallRequest): Promise<InstallReport> {
@@ -1804,7 +1941,21 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
   if (!existsSync(projectRoot)) {
     throw new InstallError(`project directory ${toPosix(projectRoot)} does not exist`);
   }
-  if (request.models && request.channel === "skills") {
+  if (request.action !== "check" && !request.allowCheckout) {
+    const rootIdentity = pathIdentity(packageRoot);
+    const projectIdentity = pathIdentity(projectRoot);
+    if (
+      projectIdentity === rootIdentity ||
+      projectIdentity.startsWith(`${rootIdentity.replace(/\/+$/, "")}/`)
+    ) {
+      throw new InstallError(
+        `project directory ${toPosix(projectRoot)} is inside the ARS checkout; installing there ` +
+          "would write managed files into the source tree. Choose another --project, or pass " +
+          "--allow-checkout only for adapter development.",
+      );
+    }
+  }
+  if ((request.models || request.screeningRoles) && request.channel === "skills") {
     throw new InstallError(
       "the skills channel has no plugin options, so --models is not supported; " +
         "the reviewer keeps its source `inherit` model. Install the plugin channel to configure model mappings.",
@@ -1812,6 +1963,9 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
   }
 
   const paths = resolveScope(request, packageRoot);
+  if (request.action !== "check") {
+    assertStateOutsideProject(paths.stateRoot, paths.projectRoot);
+  }
   const catalog: Catalog = loadCatalog(packageRoot);
   const operations: InstallOperation[] = [];
   const blockers: string[] = [];
@@ -1857,6 +2011,14 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
   );
   const persistedPluginOptions = pluginOptionsFromEntry(existingPlugin?.value);
   const persistedModels = modelsFromPluginEntry(existingPlugin?.value);
+  const persistedScreeningValue = persistedPluginOptions.screening;
+  const persistedScreening =
+    persistedScreeningValue &&
+    typeof persistedScreeningValue === "object" &&
+    !Array.isArray(persistedScreeningValue)
+      ? (persistedScreeningValue as Record<string, unknown>)
+      : undefined;
+  const persistedScreeningRoles = screeningRolesFromPluginEntry(existingPlugin?.value);
 
   // Source/shadowing preview: respect native precedence and never delete the
   // other channel's files. Both may coexist, but one route per scope is the
@@ -1880,7 +2042,7 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
     }
   }
 
-  const { models, desiredAgents, skillSources } = inspectChannelSources({
+  const { models, screeningRoles, desiredAgents, skillSources } = inspectChannelSources({
     request,
     paths,
     packageRoot,
@@ -1888,11 +2050,11 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
     env,
     catalog,
     persistedModels,
+    persistedScreeningRoles,
     blockers,
     warnings,
     operations,
   });
-
 
   if (request.action === "check") {
     return await checkInstallation({
@@ -1906,6 +2068,7 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
       desiredAgents,
       skillSources,
       models,
+      screeningRoles,
       operations,
       blockers,
       warnings,
@@ -1962,6 +2125,8 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
     existingPlugin,
     persistedPluginOptions,
     models,
+    screeningRoles,
+    persistedScreening,
     desiredAgents,
     skillSources,
     state,
@@ -2192,7 +2357,8 @@ function acquireLock(stateRoot: string, projectRoot: string): LockHandle {
     if (!stale) {
       // A live owner is never displaced by age alone.
       throw new InstallError(
-        `another ARS installation holds ${toPosix(path)}; retry after it finishes`,
+        `another ARS installation holds ${toPosix(path)}; retry after it finishes. ` +
+          "If no installer is running (for example the lock file is empty), delete that file and retry.",
       );
     }
     try {
@@ -2201,7 +2367,17 @@ function acquireLock(stateRoot: string, projectRoot: string): LockHandle {
     } catch {
       // Another process may have taken it over.
     }
-    write();
+    try {
+      write();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new InstallError(
+          `another ARS installation took ${toPosix(path)} while a stale lock was being reclaimed; ` +
+            "retry after it finishes.",
+        );
+      }
+      throw error;
+    }
   }
   return {
     path,
@@ -2397,7 +2573,12 @@ async function applyInstall(input: ApplyInstallInput): Promise<InstallReport> {
         // Move the whole old unit aside instead of partially deleting it.
         undo.push(() => {
           if (existsSync(write.target)) {
-            if (skillTreeDigest(write.target) !== writtenDigest) return;
+            if (skillTreeDigest(write.target) !== writtenDigest) {
+              throw new InstallError(
+                `skill directory ${toPosix(write.target)} changed during rollback; ` +
+                  "left in place with its private backup",
+              );
+            }
             removeDirectory(write.target);
           }
           if (existsSync(originalUnit)) renameSync(originalUnit, write.target);
@@ -2517,6 +2698,7 @@ interface CheckInput {
   desiredAgents: NativeAgentSpec[];
   skillSources: SkillSource[];
   models?: AdapterOptions["models"];
+  screeningRoles?: Record<string, ModelRef>;
   operations: InstallOperation[];
   blockers: string[];
   warnings: string[];
@@ -2693,6 +2875,16 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
         "no persisted or explicit models mapping; Claude aliased commands stay blocked until the plugin options carry a mapping",
       );
     }
+    const effectiveScreening = input.screeningRoles ?? request.screeningRoles;
+    const mappedRoles = Object.keys(effectiveScreening ?? {});
+    pushCheck(
+      checks,
+      "screening-models",
+      mappedRoles.length ? "ok" : "warn",
+      mappedRoles.length
+        ? `screening roles configured: ${mappedRoles.join(", ")}; availability is verified by the host`
+        : "no screening role mappings; screening calls use the session model unless the plugin options carry screening.roles",
+    );
   }
 
   if (paths.scope === "global") {

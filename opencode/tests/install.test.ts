@@ -815,19 +815,24 @@ test("model mappings are plugin-only and are written into the plugin options", a
       (error: unknown) =>
         error instanceof InstallError && /--models is not supported/.test(error.message),
     );
-    const models = parseModelsArgument(
-      '{"aliases":{"sonnet":{"providerID":"p","model":"m"}},"agents":{"synthesis-agent":{"providerID":"p","model":"m2","variant":"high"}}}',
+    const parsed = parseModelsArgument(
+      '{"aliases":{"sonnet":{"providerID":"p","model":"m"}},"agents":{"synthesis-agent":{"providerID":"p","model":"m2","variant":"high"}},"screening":{"roles":{"FTA":{"providerID":"p","model":"m3"}}}}',
       process.cwd(),
     );
     const report = await install(fixture, "plugin", "project", {
       apply: true,
-      models,
+      models: parsed?.models,
+      screeningRoles: parsed?.screeningRoles,
     });
     assert.equal(report.ok, true, report.blockers.join("\n"));
     const config = readJsonc(projectConfig(fixture));
     const entry = (config.plugins as Record<string, unknown>[])[0]!;
     const options = entry.options as Record<string, unknown>;
-    assert.deepEqual(options.models, models);
+    assert.deepEqual(options.models, parsed?.models);
+    assert.deepEqual(
+      (options.screening as Record<string, unknown>).roles,
+      { FTA: { providerID: "p", model: "m3" } },
+    );
     const agents = config.agents as Record<string, Record<string, unknown>>;
     assert.deepEqual(agents["synthesis-agent"]!.model, {
       providerID: "p",
@@ -864,7 +869,10 @@ test("V01 persisted model mappings survive update and check without --models", a
         "synthesis-agent": { providerID: "probe", model: "agent-choice" },
       },
     };
-    const first = await install(fixture, "plugin", "project", { apply: true, models });
+    const screeningRoles = {
+      FTA: { providerID: "probe", model: "screening-choice" },
+    };
+    const first = await install(fixture, "plugin", "project", { apply: true, models, screeningRoles });
     assert.equal(first.ok, true, first.blockers.join("\n"));
     const updated = await runInstaller(
       request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
@@ -873,6 +881,10 @@ test("V01 persisted model mappings survive update and check without --models", a
     const config = readJsonc(projectConfig(fixture));
     const entry = (config.plugins as Record<string, unknown>[])[0]!;
     assert.deepEqual((entry.options as Record<string, unknown>).models, models);
+    assert.deepEqual(
+      ((entry.options as Record<string, unknown>).screening as Record<string, unknown>).roles,
+      screeningRoles,
+    );
     const agents = config.agents as Record<string, Record<string, unknown>>;
     assert.deepEqual(agents["synthesis-agent"]!.model, {
       providerID: "probe",
@@ -885,6 +897,9 @@ test("V01 persisted model mappings survive update and check without --models", a
     assert.equal(modelCheck?.status, "ok");
     assert.match(modelCheck?.detail ?? "", /agents\.synthesis-agent/);
     assert.match(modelCheck?.detail ?? "", /aliases\.sonnet/);
+    const screeningCheck = check.checks.find((item) => item.id === "screening-models");
+    assert.equal(screeningCheck?.status, "ok");
+    assert.match(screeningCheck?.detail ?? "", /FTA/);
 
     // An explicit partial mapping changes only what it names.
     const partial = await runInstaller(

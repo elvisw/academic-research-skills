@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/catalog.test.ts tests/guard.test.ts tests/models.test.ts tests/setup.test.ts tests/install.test.ts tests/screening.test.ts tests/screening-fixture.test.ts tests/compatibility.test.ts tests/runtime.test.ts",
+    "test": "node --test tests/catalog.test.ts tests/guard.test.ts tests/models.test.ts tests/setup.test.ts tests/install.test.ts tests/install-patches.test.ts tests/cli.test.ts tests/screening.test.ts tests/screening-fixture.test.ts tests/compatibility.test.ts tests/runtime.test.ts",
     "test:host:install": "node --test tests/install-host.test.ts"
   },
   "dependencies": {

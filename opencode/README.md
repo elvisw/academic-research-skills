@@ -41,6 +41,12 @@ background job, scheduled maintenance, publish, commit, or paid run.
 
 ## Dependencies
 
+- Node 24+ and npm. Run `npm ci` in `opencode/` before the first install. Only
+  Windows 11 + OpenCode 2.2.7 + Node 24 is validated; macOS and Linux paths are
+  implemented but untested in this repository.
+- A complete ARS checkout: the five skill directories, `.claude-plugin/`,
+  `shared/`, `scripts/` and the checked-out `opencode/` package. The installer
+  registers or copies those assets; it is not a standalone distribution.
 - A real Python 3 interpreter for the write-scope guard and the three CLI
   commands (`ars-mark-read`, `ars-unmark-read`, `ars-cache-invalidate`).
   `py -3`, `python3`, and `python` are tried in that order; Microsoft Store
@@ -61,7 +67,7 @@ boundary.
 | Channel | What it installs | What it does not install |
 |---|---|---|
 | `plugin` | The adapter registration plus its four portable native agents. The plugin supplies the five skills, sixteen `/ars-*` commands, adapter tools and write-scope guard at runtime. | No skill copy. A second skills installation is never required. |
-| `skills` | The five complete skill directories in native OpenCode discovery, the `screening-reviewer-agent` native subagent, and one managed instruction file. | No plugin entry, commands, adapter tools, hooks or write-scope guard. `sr-screener` uses its own reviewer, not plugin dispatch. |
+| `skills` | The five complete skill directories in native OpenCode discovery, the `screening-reviewer-agent` native subagent, and one managed instruction file. Project scope embeds the routing core; global scope writes a compatibility note only. | No plugin entry, commands, adapter tools, hooks or write-scope guard. `sr-screener` uses its own reviewer, not plugin dispatch. |
 
 ```powershell
 # Keep the complete checkout; replace both paths with your actual directories.
@@ -80,7 +86,9 @@ node "C:/work/academic-research-skills/opencode/install.ts" check --channel plug
 These are alternative routes, not four installations to stack. For a global
 plugin use `--scope global` with the same checkout/models profile. For skills-only
 use `--channel skills` at either scope and omit `--models`. Keep `--project`
-explicit so commands run from the checkout never target it accidentally.
+explicit. Installing into the ARS checkout itself is refused; `--allow-checkout`
+is reserved for adapter development and writes managed files into the source
+tree.
 
 `install`, `check`, `update` and `uninstall` are the supported actions.
 `--channel plugin|skills` is required. `--scope project|global` defaults to the
@@ -89,6 +97,12 @@ pass it explicitly when both scopes already have unrelated configs.
 `--project <dir>` selects the project (default: the current directory).
 `--models <json|file>` adds explicit model mappings for the plugin channel only;
 the skills channel keeps the source `inherit` model and rejects the option.
+`--adopt-legacy` is accepted by `install` and `update`, not by `check` or
+`uninstall`.
+
+Exit codes: `0` success, `1` refused or failed checks, `2` usage error. `check`
+returns `1` when any check reports an error (for example Node below 24 or a
+missing `opencode/node_modules/@opencode/plugin`).
 
 Installation paths:
 
@@ -106,8 +120,11 @@ The install is conservative:
 
 - Every mutation is previewed. `--apply` is required; `check` never writes.
 - JSONC is edited with `jsonc-parser`: comments, spacing, Unicode and unrelated
-  keys (including existing secret values) survive. Logs never print config
-  contents.
+  keys (including existing secret values) survive. A UTF-8 BOM is accepted and
+  removed on rewrite. Logs never print config contents.
+- A defined but malformed `plugins` or `instructions` value is refused, never
+  silently replaced by an array. A source skill tree containing a symbolic link
+  is refused because a copy would be incomplete.
 - Backups and the ownership manifest live under
   `~/.ars/opencode-install/` (override `ARS_OPENCODE_STATE_DIR`), outside the
   project VCS. A state directory inside the project or any enclosing Git
@@ -178,6 +195,9 @@ node "C:/work/academic-research-skills/opencode/install.ts" install --channel pl
 
 The models file contains only mappings, for example
 `{"aliases":{"sonnet":{"providerID":"your-provider","model":"your-model"}}}`.
+It may also carry `{"screening":{"roles":{"FTA":{"providerID":"your-provider","model":"your-model"}}}}`.
+Screening role names are `A`, `B`, `ADJ`, `QC`, `FTA`, `FTB` and `FTADJ`; the
+installer validates each reference and writes it into `options.screening.roles`.
 Omitting `--models` on a later update/check preserves and uses persisted mappings;
 it does not reset them. Store credentials through OpenCode, never in this file.
 
@@ -384,7 +404,8 @@ Python tooling.
    `node "C:/work/academic-research-skills/opencode/install.ts" update --channel skills --scope project --project "C:/research/my-project" --apply`. Each of the five skill
   directories is replaced as a unit. If you edited any file inside a bundle, the
   whole bundle is kept and listed as retained; unchanged retired resources are
-  removed. A failed removal stays recorded and is retried by the next update or
+  removed. A failed skill removal stays recorded and is retried by the next
+  update or uninstall; a failed instruction removal is retried by the next
   uninstall.
 - **Uninstall:** `node "C:/work/academic-research-skills/opencode/install.ts" uninstall --channel <plugin|skills> --scope project --project "C:/research/my-project" --apply`.
   Only unchanged owned entries are removed. Modified agents, skills and

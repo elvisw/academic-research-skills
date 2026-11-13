@@ -41,12 +41,17 @@ Options:
   --models <json|file>      Explicit model mappings for the plugin channel only,
                             for example:
                             {"aliases":{"sonnet":{"providerID":"p","model":"m"}}}
+                            {"screening":{"roles":{"FTA":{"providerID":"p","model":"m"}}}}
   --apply                   Write the previewed changes. Without it nothing is
                             written. The check action is always read-only.
   --adopt-legacy            Take ownership of a verified legacy template that
-                            the previous adapter generated. Never required for
-                            identical pre-existing assets.
+                            the previous adapter generated (install/update).
+                            Never required for identical pre-existing assets.
+  --allow-checkout          Permit installing into the ARS checkout itself.
+                            Adapter development only; refused by default.
   -h, --help                Show this help.
+
+Exit codes: 0 success, 1 refused or failed checks, 2 usage error.
 
 Channels are not interchangeable: the plugin channel supplies the five skills,
 sixteen commands, four native agents, tools and guard at runtime; the skills
@@ -62,6 +67,7 @@ interface ParsedArgs {
   models?: string;
   apply: boolean;
   adoptLegacy: boolean;
+  allowCheckout: boolean;
   help: boolean;
 }
 
@@ -75,6 +81,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     projectRoot: process.cwd(),
     apply: false,
     adoptLegacy: false,
+    allowCheckout: false,
     help: false,
   };
   let action: InstallAction | undefined;
@@ -149,6 +156,10 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         if (inline !== undefined) fail("--adopt-legacy does not take a value");
         args.adoptLegacy = true;
         break;
+      case "--allow-checkout":
+        if (inline !== undefined) fail("--allow-checkout does not take a value");
+        args.allowCheckout = true;
+        break;
       default:
         fail(`unknown option ${JSON.stringify(flag)}`);
     }
@@ -159,6 +170,12 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   if (!args.channel) fail("--channel is required (plugin or skills)");
   if (args.action === "check" && args.apply) {
     fail("check is read-only and does not accept --apply");
+  }
+  if (args.action === "uninstall" && args.models !== undefined) {
+    fail("uninstall does not accept --models; update the installation first");
+  }
+  if (args.adoptLegacy && (args.action === "check" || args.action === "uninstall")) {
+    fail("--adopt-legacy is only accepted by install or update");
   }
   return args;
 }
@@ -189,15 +206,18 @@ async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
   try {
+    const parsedModels = parseModelsArgument(parsed.models, process.cwd());
     const report = await runInstaller({
       action: parsed.action,
       channel: parsed.channel as Channel,
       scope: parsed.scope,
       projectRoot: parsed.projectRoot,
       packageRoot,
-      models: parseModelsArgument(parsed.models, process.cwd()),
+      models: parsedModels?.models,
+      screeningRoles: parsedModels?.screeningRoles,
       apply: parsed.apply,
       adoptLegacy: parsed.adoptLegacy,
+      allowCheckout: parsed.allowCheckout,
     });
     console.log(formatInstallReport(report));
     return report.ok ? 0 : 1;
