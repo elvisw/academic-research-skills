@@ -71,6 +71,8 @@ v3.3 は [**PaperOrchestra**](https://arxiv.org/abs/2604.05018)（Song, Song, Pf
 
 **Codex CLI を使用していますか?** 代わりに姉妹ディストリビューションをインストールしてください: [`Imbad0202/academic-research-skills-codex`](https://github.com/Imbad0202/academic-research-skills-codex) — 同じワークフローコンテンツ、`ars-*` エイリアスを持つ単一の `$academic-research-suite` スキルとしての Codex ネイティブパッケージング。
 
+**OpenCode V2 をお使いですか？** [`opencode/README.md`](opencode/README.md) の手順でリポジトリ内のアダプターをインストールしてください。未変更の ARS コアを包む薄いラッパーで、Windows 11 + OpenCode 2.2.7 + Node 24 で検証済みです。macOS/Linux は未検証です。
+
 ## パフォーマンス＆コスト
 
 **👉 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)** — モードごとのトークン予算、フルパイプライン見積り（15k 語の論文で、2026-09 の定価で約 US$3〜7、キャッシュ割引前）、推奨 Claude Code 設定（Auto モード; Agent Team オプション）。

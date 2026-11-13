@@ -262,6 +262,10 @@ capacity and is never run by CI.
 
 ---
 
+## OpenCode V2 (separate adapter)
+
+ARS core is shared, but OpenCode uses a different host contract. Install the in-tree adapter by following [`opencode/README.md`](../opencode/README.md); it registers the five skills, sixteen `/ars-*` commands, four native agents and the write-scope guard. Validated on Windows 11 + OpenCode 2.2.7 + Node 24; macOS/Linux are untested. This is not a Claude Code install method, and the adapter does not modify the ARS core.
+
 ## Installation methods
 
 Claude discovers skills at `<install-root>/<skill-name>/SKILL.md`. This repo contains five separate skills, each with its own `SKILL.md`:
