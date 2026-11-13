@@ -70,6 +70,43 @@ node "C:/work/academic-research-skills/opencode/install.ts" install --channel pl
 
 所以不配置 `screening.roles` 不会阻止安装；它只会在筛选配置要求某个角色模型时阻止该次筛选派发。
 
+### 如何配置 `screening.roles`
+
+在传给 `--models` 的同一个 JSON 文件里，加一个顶层 `screening.roles`。它和 `aliases` 平级，不要放进 `aliases` 里面：
+
+```json
+{
+  "aliases": {
+    "sonnet": { "providerID": "your-provider", "model": "your-balanced-model" }
+  },
+  "screening": {
+    "roles": {
+      "A":     { "providerID": "your-provider", "model": "your-balanced-model" },
+      "B":     { "providerID": "your-provider", "model": "your-balanced-model" },
+      "ADJ":   { "providerID": "your-provider", "model": "your-strongest-model" },
+      "QC":    { "providerID": "your-provider", "model": "your-fast-model" },
+      "FTA":   { "providerID": "your-provider", "model": "your-balanced-model" },
+      "FTB":   { "providerID": "your-provider", "model": "your-balanced-model" },
+      "FTADJ": { "providerID": "your-provider", "model": "your-strongest-model" }
+    }
+  }
+}
+```
+
+- 每个角色值是 `{ "providerID": "...", "model": "..." }`，和 `aliases` 的引用形状相同；不要写 `sonnet`、`haiku` 这样的档位键。
+- 可以七个角色都配；只做标题/摘要筛选时可以只配 `A`、`B`、`ADJ`、`QC`，只做全文筛选时可以只配 `FTA`、`FTB`、`FTADJ`。实际需要哪些，取决于生成的筛选配置为哪些角色指定了模型。
+- 所有角色可以使用同一个模型；也可以按上表分配不同模型。
+- 安装器会校验每个引用的形状并写入插件 options 的 `screening.roles`；模型是否真实存在由宿主加载时验证，安装检查不能离线证明可用性。
+
+配置后重新运行 `install` 或 `update` 并传入这个文件，例如：
+
+```powershell
+node "C:/work/academic-research-skills/opencode/install.ts" install `
+  --channel plugin --scope project `
+  --project "C:/research/my-project" `
+  --models "C:/research/ars-models.json" --apply
+```
+
 后续 update/check 省略 `--models` 会保留已持久化映射，不会重置。凭据请通过 OpenCode 存储，不要写进这个文件。
 
 ## 哪些配置会消费映射

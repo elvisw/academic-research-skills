@@ -85,6 +85,50 @@ emitted screening config names a model for the role:
 Omitting `screening.roles` therefore does not block installation; it only blocks
 a screening dispatch when the emitted config requires a role model.
 
+### How to configure `screening.roles`
+
+Add a top-level `screening.roles` to the same JSON file passed to `--models`. It
+sits beside `aliases`, not inside it:
+
+```json
+{
+  "aliases": {
+    "sonnet": { "providerID": "your-provider", "model": "your-balanced-model" }
+  },
+  "screening": {
+    "roles": {
+      "A":     { "providerID": "your-provider", "model": "your-balanced-model" },
+      "B":     { "providerID": "your-provider", "model": "your-balanced-model" },
+      "ADJ":   { "providerID": "your-provider", "model": "your-strongest-model" },
+      "QC":    { "providerID": "your-provider", "model": "your-fast-model" },
+      "FTA":   { "providerID": "your-provider", "model": "your-balanced-model" },
+      "FTB":   { "providerID": "your-provider", "model": "your-balanced-model" },
+      "FTADJ": { "providerID": "your-provider", "model": "your-strongest-model" }
+    }
+  }
+}
+```
+
+- Each role value is `{ "providerID": "...", "model": "..." }`, the same shape as
+  an alias; do not use tier keys such as `sonnet` or `haiku`.
+- You can configure all seven roles. For title/abstract screening only, `A`, `B`,
+  `ADJ` and `QC` are enough; for full-text screening only, `FTA`, `FTB` and
+  `FTADJ` are enough. The emitted screening config decides which roles actually
+  need a model.
+- All roles may use the same model, or follow the tier suggestions above.
+- The installer validates each reference and writes it to the plugin options as
+  `screening.roles`; whether the model exists is verified by the host at load
+  time, not by the offline installation check.
+
+Re-run `install` or `update` with the file after changing it, for example:
+
+```powershell
+node "C:/work/academic-research-skills/opencode/install.ts" install `
+  --channel plugin --scope project `
+  --project "C:/research/my-project" `
+  --models "C:/research/ars-models.json" --apply
+```
+
 Screening roles and `models.agents.<id>` are **direct model references**, not
 `models.aliases` keys. `haiku` or `opus` aliases do not apply to them.
 
