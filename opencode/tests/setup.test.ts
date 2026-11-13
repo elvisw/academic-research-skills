@@ -50,7 +50,6 @@ function host(overrides: Partial<HostSnapshot> = {}): HostSnapshot {
 test("four native agents are derived from the source files", () => {
   const { agents, problems } = loadNativeAgents(
     repoRoot,
-    repoRoot,
     {},
     models,
   );
@@ -84,7 +83,7 @@ test("four native agents are derived from the source files", () => {
 });
 
 test("installed agents are verified by system, mode, permissions and model", async () => {
-  const { agents: specs } = loadNativeAgents(repoRoot, repoRoot, {}, models);
+  const { agents: specs } = loadNativeAgents(repoRoot, {}, models);
   const installed = (overrides: Record<string, unknown> = {}) =>
     host({
       agents: specs.map((agent) => ({
@@ -281,7 +280,7 @@ test("real host permission shape keeps the expected block contiguous", () => {
 });
 
 test("a missing native agent is an error only in strict status mode", async () => {
-  const { agents: specs } = loadNativeAgents(repoRoot, repoRoot, {}, models);
+  const { agents: specs } = loadNativeAgents(repoRoot, {}, models);
   const hostWithoutAgents = host();
   const preview = await planInstallation({
     catalog,
@@ -311,7 +310,7 @@ test("a missing native agent is an error only in strict status mode", async () =
 });
 
 test("permission matrices mirror the source tool lists", () => {
-  const reviewer = loadNativeAgents(repoRoot, repoRoot, {}, models).agents.find(
+  const reviewer = loadNativeAgents(repoRoot, {}, models).agents.find(
     (agent) => agent.id === "screening-reviewer-agent",
   );
   assert.ok(reviewer);
@@ -337,7 +336,7 @@ test("permission matrices mirror the source tool lists", () => {
     ),
   );
 
-  const synthesis = loadNativeAgents(repoRoot, repoRoot, {}, models).agents.find(
+  const synthesis = loadNativeAgents(repoRoot, {}, models).agents.find(
     (agent) => agent.id === "synthesis-agent",
   );
   assert.ok(synthesis);
@@ -390,7 +389,7 @@ test("installation check reports a collision instead of overwriting", async () =
 });
 
 test("identical agent and skill installs are accepted", async () => {
-  const { agents } = loadNativeAgents(repoRoot, repoRoot, {}, models);
+  const { agents } = loadNativeAgents(repoRoot, {}, models);
   const synthesis = agents.find((agent) => agent.id === "synthesis-agent");
   assert.ok(synthesis);
   const report = await planInstallation({

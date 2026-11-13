@@ -263,7 +263,7 @@ test("the status tool lists agents and returns one complete fragment at a time",
       (candidate) => candidate.name === "ars_opencode_status",
     );
     assert.ok(tool);
-    const specs = loadNativeAgents(repoRoot, repoRoot, {}, []).agents;
+    const specs = loadNativeAgents(repoRoot, {}, []).agents;
     assert.equal(specs.length, 4);
 
     const plain = (await tool.execute({}, {
@@ -385,7 +385,7 @@ test("native ARS agents cannot call the adapter mutation tools", async () => {
       (candidate) => candidate.name === "ars_screening",
     );
     assert.ok(runScript && screening);
-    const specs = loadNativeAgents(repoRoot, repoRoot, {}, []).agents;
+    const specs = loadNativeAgents(repoRoot, {}, []).agents;
     const beforeAsserts = host.assertCalls.length;
     const beforeSessions = host.sessionsCreated();
 
@@ -414,7 +414,7 @@ test("native ARS agents cannot call the adapter mutation tools", async () => {
     (host.ctx.agent as {
       list: () => Promise<{ data: { id: string }[] }>;
     }).list = async () => {
-      const reviewer = loadNativeAgents(repoRoot, repoRoot, {}, []).agents.find(
+      const reviewer = loadNativeAgents(repoRoot, {}, []).agents.find(
         (agent) => agent.id === "screening-reviewer-agent",
       );
       assert.ok(reviewer);
@@ -562,7 +562,7 @@ test("screening blocks a reviewer whose installed contract differs", async () =>
   const setup = pluginDefinition.setup as (ctx: unknown) => Promise<() => Promise<void>>;
   const cleanup = await setup(host.ctx);
   try {
-    const reviewer = loadNativeAgents(repoRoot, repoRoot, {}, []).agents.find(
+    const reviewer = loadNativeAgents(repoRoot, {}, []).agents.find(
       (agent) => agent.id === "screening-reviewer-agent",
     );
     assert.ok(reviewer);

@@ -856,7 +856,6 @@ export default Plugin.define({
             const host = await hostSnapshot(ctx);
             const expectedReviewer = loadNativeAgents(
               packageRoot,
-              projectRoot,
               options,
               host.models,
             ).agents.find((agent) => agent.id === SCREENING_AGENT);

@@ -9,16 +9,22 @@
   "exports": {
     ".": "./index.ts"
   },
+  "bin": {
+    "ars-opencode-install": "./install.ts"
+  },
   "files": [
     "index.ts",
+    "install.ts",
     "src"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/catalog.test.ts tests/guard.test.ts tests/models.test.ts tests/setup.test.ts tests/screening.test.ts tests/screening-fixture.test.ts tests/compatibility.test.ts tests/runtime.test.ts"
+    "test": "node --test tests/catalog.test.ts tests/guard.test.ts tests/models.test.ts tests/setup.test.ts tests/install.test.ts tests/screening.test.ts tests/screening-fixture.test.ts tests/compatibility.test.ts tests/runtime.test.ts",
+    "test:host:install": "node --test tests/install-host.test.ts"
   },
   "dependencies": {
-    "@opencode/plugin": "2.2.7"
+    "@opencode/plugin": "2.2.7",
+    "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
     "@types/node": "^24.12.2",

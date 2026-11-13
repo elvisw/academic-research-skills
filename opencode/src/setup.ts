@@ -209,12 +209,35 @@ function agentHostNote(agentId: string): string {
   ].join("\n");
 }
 
-export function loadNativeAgents(
+/** The portable compatibility note appended to every native agent. */
+export function agentCompatibilityNote(packageRoot: string): string {
+  return hostCompatibilityNote(packageRoot);
+}
+
+/**
+ * The pre-portability template embedded the supplied project root. It is only
+ * used to recognise a verified legacy install before `--adopt-legacy` takes
+ * ownership; new fragments never contain a project path.
+ */
+export function legacyAgentSystem(
   packageRoot: string,
   projectRoot: string,
+  portableSystem: string,
+): string {
+  const portable = agentCompatibilityNote(packageRoot);
+  const legacy = hostCompatibilityNote(packageRoot, projectRoot);
+  return portableSystem.includes(portable)
+    ? portableSystem.replace(portable, legacy)
+    : `${portableSystem}\n\n${legacy}`;
+}
+
+export function loadNativeAgents(
+  packageRoot: string,
   options: AdapterOptions,
   availableModels: readonly ModelInfoLike[],
+  behaviour: { validateModels?: boolean } = {},
 ): { agents: NativeAgentSpec[]; problems: string[]; warnings: string[] } {
+  const validateModels = behaviour.validateModels ?? true;
   const agents: NativeAgentSpec[] = [];
   const problems: string[] = [];
   const warnings: string[] = [];
@@ -236,13 +259,13 @@ export function loadNativeAgents(
     const system = [
       body,
       agentHostNote(id),
-      hostCompatibilityNote(packageRoot, projectRoot),
+      agentCompatibilityNote(packageRoot),
     ].join("\n\n");
     const sourceModel = frontmatter.model;
     let model: ModelRef | undefined;
     if (models.agents?.[id]) {
       model = models.agents[id];
-      if (!modelExists(model, availableModels)) {
+      if (validateModels && !modelExists(model, availableModels)) {
         problems.push(
           `models.agents.${id} names ${model.providerID}/${model.model}, which this host does not offer`,
         );
@@ -250,7 +273,7 @@ export function loadNativeAgents(
     } else if (sourceModel && sourceModel !== "inherit") {
       const alias = models.aliases?.[sourceModel];
       if (alias) {
-        if (!modelExists(alias, availableModels)) {
+        if (validateModels && !modelExists(alias, availableModels)) {
           problems.push(
             `models.aliases.${sourceModel} names ${alias.providerID}/${alias.model}, which this host does not offer`,
           );
@@ -453,7 +476,6 @@ export async function planInstallation(options: {
 
   const { agents, problems, warnings } = loadNativeAgents(
     packageRoot,
-    projectRoot,
     adapter,
     host.models,
   );

@@ -17,12 +17,16 @@ instead of guessing.
 
 **Real-host status.** An isolated OpenCode 2.2.7 project verified 5 skills,
 16 commands, 4 configured agents, permission decisions, and real write/edit/
-patch/move/delete executors. A local protocol fixture verified model IDs across
+patch/move/delete executors in the pre-installer baseline. The installation gate
+also passed both channels at both scopes on Node `24.21.0`, with no skipped
+cases: native skill/resource loading, assembled instructions, and legitimate/
+ARS-refused writes in two locations of one global-config server. Configuration
+presence alone is not acceptance. A local protocol fixture verified model IDs across
 command turns and tool continuation without calling an external model. Actual
 provider calls, native subagent dispatch, and the full research pipeline remain
-unverified; see Development below. Tests also use the installed SDK, in-memory
-callbacks, and real Python guard/screening fixtures, none of which substitutes
-for full workflow acceptance.
+unverified; see Development below. Tests also use the installed
+SDK, in-memory callbacks, and real Python guard/screening fixtures, none of which
+substitutes for full workflow acceptance.
 
 ## What is reused unchanged
 
@@ -48,55 +52,110 @@ background job, scheduled maintenance, publish, commit, or paid run.
 - Full-text screening needs readable PDF paths; title/abstract screening needs
   the batch files under `<work>/batches/`.
 
-## Install (manual, preview only)
+## Installation channels
 
-1. Add the plugin to your OpenCode config (global
-   `~/.config/opencode/opencode.json(c)` or project `opencode.json(c)`):
+The installer completes the routes the original project documents. Both
+channels support project and user-global scope; each keeps its own capability
+boundary.
 
-   ```jsonc
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "plugins": ["./academic-research-skills/opencode"]
-   }
-   ```
+| Channel | What it installs | What it does not install |
+|---|---|---|
+| `plugin` | The adapter registration plus its four portable native agents. The plugin supplies the five skills, sixteen `/ars-*` commands, adapter tools and write-scope guard at runtime. | No skill copy. A second skills installation is never required. |
+| `skills` | The five complete skill directories in native OpenCode discovery, the `screening-reviewer-agent` native subagent, and one managed instruction file. | No plugin entry, commands, adapter tools, hooks or write-scope guard. `sr-screener` uses its own reviewer, not plugin dispatch. |
 
-   An absolute path also works. `repoRoot` is derived from the adapter's own
-   location; set the `repoRoot` option only when the package is moved away from
-   the ARS checkout.
+```powershell
+# Keep the complete checkout; replace both paths with your actual directories.
+npm --prefix "C:/work/academic-research-skills/opencode" ci
 
-2. Start OpenCode and run the read-only installation check:
+# Preview (default): writes nothing.
+node "C:/work/academic-research-skills/opencode/install.ts" install --channel plugin --scope project --project "C:/research/my-project"
 
-   ```text
-   Use the ars_opencode_status tool.
-   ```
+# Apply after reviewing the preview.
+node "C:/work/academic-research-skills/opencode/install.ts" install --channel plugin --scope project --project "C:/research/my-project" --models "C:/research/ars-models.json" --apply
 
-   This tool is the adapter's `setup --check` equivalent: it writes nothing and
-   reports catalog counts, effective agent instructions/mode/permissions/models,
-   command ownership, collisions, model mappings, guard status, and the four
-   native agent IDs. It deliberately does **not** return all four agents' full
-   `system` text at once: a single bundle is about 96 KB, above the host's
-   default 51,200-byte tool-output limit.
+# Read-only diagnostics.
+node "C:/work/academic-research-skills/opencode/install.ts" check --channel plugin --scope project --project "C:/research/my-project"
+```
 
-3. Request one complete agent fragment at a time:
+These are alternative routes, not four installations to stack. For a global
+plugin use `--scope global` with the same checkout/models profile. For skills-only
+use `--channel skills` at either scope and omit `--models`. Keep `--project`
+explicit so commands run from the checkout never target it accidentally.
 
-   ```text
-   Use ars_opencode_status with agent = "synthesis-agent"
-   ```
+`install`, `check`, `update` and `uninstall` are the supported actions.
+`--channel plugin|skills` is required. `--scope project|global` defaults to the
+scope that already has a configuration (project is preferred when both do);
+pass it explicitly when both scopes already have unrelated configs.
+`--project <dir>` selects the project (default: the current directory).
+`--models <json|file>` adds explicit model mappings for the plugin channel only;
+the skills channel keeps the source `inherit` model and rejects the option.
 
-   Repeat for `research-architect-agent`, `report-compiler-agent`, and
-   `screening-reviewer-agent`. Each response carries the plugin entry plus only
-   `agents.<id>`, so it stays well below the output limit. Merge the plugin
-   entry once and each `agents.<id>` entry by hand. The adapter never writes
-   configuration. A colliding command, skill or agent is a setup error:
-   registration is refused rather than partially applied.
+Installation paths:
 
-4. Reload (`/reload`) and check that `/ars-full`, the five skills, and the four
-   agents resolve.
+- Project plugin config: `opencode.json` (or an existing `opencode.jsonc` /
+  `.opencode/opencode.json(c)`). More than one existing project config in the
+  same scope is refused as ambiguous; nothing is guessed.
+- Global plugin config: `~/.config/opencode/opencode.json(c)` (respects
+  `XDG_CONFIG_HOME`).
+- Project skills: `<project>/.opencode/skills/<name>/`, managed instructions at
+  `<project>/.opencode/ars-instructions.md`, referenced from `instructions`.
+- Global skills: `~/.config/opencode/skills/<name>/`, managed instructions at
+  `~/.config/opencode/ars-instructions.md`.
 
-   The generated agent instructions embed the project root. Regenerate and
-   re-merge the fragment when you move the checkout or use ARS in a different
-   project; one global fragment cannot serve multiple project roots. A
-   collision with an existing agent is refused rather than overwritten.
+The install is conservative:
+
+- Every mutation is previewed. `--apply` is required; `check` never writes.
+- JSONC is edited with `jsonc-parser`: comments, spacing, Unicode and unrelated
+  keys (including existing secret values) survive. Logs never print config
+  contents.
+- Backups and the ownership manifest live under
+  `~/.ars/opencode-install/` (override `ARS_OPENCODE_STATE_DIR`), outside the
+  project VCS. A state directory inside the project or any enclosing Git
+  worktree, including a resolved junction, is refused.
+- Sensitive staging also stays in the private state directory. Atomic replacement
+  needs the state and destination on the same filesystem. Cross-filesystem
+  replacement fails visibly, without an in-place copy fallback; choose a private
+  state location on that filesystem **before the initial install**. Keep the same
+  state location for later lifecycle commands.
+- An installer lock and a pre-write re-read abort on concurrent edits.
+- Ownership is digest-based. A second apply is a no-op; a user-modified entry is
+  retained and reported, never overwritten. Uninstall removes only unchanged
+  owned entries and keeps modified instruction files together with their
+  `instructions` reference.
+- Skill updates are directory units. A modified bundle is kept whole rather
+  than mixing old templates with new prose. Retired owned assets are removed
+  only when unchanged; failed removals stay recorded for retry.
+- Source copies omit VCS metadata and generated dependency/bytecode caches.
+  Ownership checks do **not** ignore later installed extras or junctions: these
+  retain the bundle. Review/remove unwanted generated caches yourself before
+  retrying an update; the installer never silently discards them.
+- Identical pre-existing assets are reused without claiming ownership. A
+  differing unowned asset is a collision and blocks the run.
+- A legacy fixed-root agent template is recognised but adopted only with
+  `--adopt-legacy`; an install request alone does not take ownership.
+
+After applying, reload (`/reload`) and verify with `check` plus the host's own
+inventory. Disk checks do not prove the host loaded a plugin, registered a
+command or activated the guard.
+
+### Manual fallback
+
+The plugin can still be added by hand. Project config example:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["./academic-research-skills/opencode"]
+}
+```
+
+An absolute path also works. `repoRoot` is derived from the adapter's own
+location; set it only when the package is moved away from the ARS checkout.
+The four native agents still need their `agents.<id>` entries. Use
+`ars_opencode_status` (read-only) to request one complete agent fragment at a
+time; a single bundle would exceed the host's tool-output limit. Generated agent
+instructions are project-portable and embed only the checkout root. A collision
+with an existing command, skill or agent is refused rather than overwritten.
 
 The adapter also registers two other tools: `ars_run_script` (shell-free CLI
 execution, host-permission checked) and `ars_screening` (sr-screener dispatch).
@@ -110,7 +169,26 @@ model-callable command tool.
 ## Models
 
 OpenCode has no Claude `sonnet`/`opus` aliases. The adapter enforces explicit
-mappings:
+mappings. The installer's `--models` value is written into the plugin options, so
+the same mappings work after a reload:
+
+```powershell
+node "C:/work/academic-research-skills/opencode/install.ts" install --channel plugin --scope project --project "C:/research/my-project" --models "C:/research/ars-models.json" --apply
+```
+
+The models file contains only mappings, for example
+`{"aliases":{"sonnet":{"providerID":"your-provider","model":"your-model"}}}`.
+Omitting `--models` on a later update/check preserves and uses persisted mappings;
+it does not reset them. Store credentials through OpenCode, never in this file.
+
+Model consumers differ by channel:
+
+- **Plugin channel:** command aliases (`models.aliases.<alias>`), native agent
+  overrides (`models.agents.<id>`) and screening role mappings
+  (`screening.roles.<role>`). The adapter itself never invents a model.
+- **Skills channel:** no plugin options exist. The reviewer keeps its source
+  `inherit` model; `--models` is rejected instead of being silently dropped.
+- A mapping is a provider/model reference only. It never carries credentials.
 
 - every command that declares a Claude alias must have `models.aliases.<alias>`;
   a missing or unavailable mapping **blocks that invocation** before any prompt
@@ -196,7 +274,7 @@ package location or the explicit option) and the current project
 from the guard child and from shell children, then the two roots are set
 explicitly.
 
-### Degraded modes (visible, never fail-open)
+### Degraded modes (visible pass-through)
 
 The guard is optional hardening. If no real Python is found, the guard script is
 missing, a run times out, exits non-zero, prints unparseable output, or relays a
@@ -295,15 +373,43 @@ python sr-screener/scripts/merge_decisions.py --work W --from W/opencode_screeni
 The pilot gate, protocol identity, and revision archiving remain owned by the
 Python tooling.
 
-## Update and uninstall
+## Update, uninstall and relocation
 
-- **Update:** pull the ARS checkout; the adapter reads files at load time.
-  Re-run `npm ci`, `npm run typecheck`, and `npm test` in `opencode/` when the
-  adapter itself changed. Re-run `ars_opencode_status` after a source change.
-- **Uninstall:** remove the plugin entry from your config and delete the merged
-  `agents` entries. Nothing else was written, so there is nothing else to clean.
-- **Move the checkout:** set `repoRoot` to the new absolute path and regenerate
-  the preview fragment; do not copy stale paths.
+- **Update (plugin):** pull the ARS checkout, then run
+  `node "C:/work/academic-research-skills/opencode/install.ts" update --channel plugin --scope project --project "C:/research/my-project" --apply` to refresh owned agent
+  entries and the plugin options. The plugin reads skills and commands at load
+  time; a running host needs `/reload`. Re-run `npm ci`, `npm run typecheck` and
+  `npm test` in `opencode/` when the adapter itself changed.
+- **Update (skills):** pull the checkout, then run
+   `node "C:/work/academic-research-skills/opencode/install.ts" update --channel skills --scope project --project "C:/research/my-project" --apply`. Each of the five skill
+  directories is replaced as a unit. If you edited any file inside a bundle, the
+  whole bundle is kept and listed as retained; unchanged retired resources are
+  removed. A failed removal stays recorded and is retried by the next update or
+  uninstall.
+- **Uninstall:** `node "C:/work/academic-research-skills/opencode/install.ts" uninstall --channel <plugin|skills> --scope project --project "C:/research/my-project" --apply`.
+  Only unchanged owned entries are removed. Modified agents, skills and
+  instruction files survive with their ownership records; a modified instruction
+  file is kept together with its `instructions` reference. Uninstall never
+  restores an old whole-config backup over later edits.
+- **Switch channels:** preview the target channel first. Existing identical
+  assets are reused without ownership. Differing unowned skill copies or agent
+  entries are collisions; remove or move the old route deliberately. The
+  installer does not silently delete the other channel's files.
+- **Move the checkout:** uninstall unchanged owned entries **before moving**,
+  then install from the new complete checkout. Plugin entries, instructions and
+  ownership are bound to the old path; `update` does not migrate that identity.
+  If already moved, restore the old path to uninstall, or review/back up and
+  remove the old manual configuration explicitly. Never delete ownership records
+  merely to force takeover. A global profile is one fixed checkout/profile, not an automatic
+  per-project clone selector. The path is machine-local, not a distribution
+  contract.
+- **Another machine:** clone the checkout, run `npm ci` in `opencode/`, and
+  install there. Do not copy a config or manifest from a different machine as
+  proof that it is installed.
+
+Manual installs keep the old rule: remove the hand-merged plugin and agent
+entries yourself. The installer reports what it owns and never claims unrelated
+entries.
 
 ## Development
 
@@ -312,7 +418,28 @@ cd opencode
 npm ci
 npm run typecheck
 npm test
+
+# Opt-in real-host installation test (pinned Windows/OpenCode 2.2.7/Node 24+).
+# This explicit command enables the gate; missing prerequisites fail, not skip.
+npm run test:host:install
 ```
+
+`npm test` runs the installer matrix: both channels at both scopes, JSONC
+comment/Unicode/secret preservation, preview/apply idempotence, model options,
+complete skill trees, managed instructions, modified-bundle retention, retirement
+of unchanged owned assets, partial uninstall and retry records, legacy adoption
+only with `--adopt-legacy`, malformed-config abort, lock contention, rollback
+after a failed write, and read-only checks. Environment isolation uses a
+temporary HOME/USERPROFILE/XDG config/data/cache/state plus `ProgramData`.
+The host gate additionally isolates APPDATA/LOCALAPPDATA, temp directories and
+credentials; checks actual host data/config/cache paths; invokes native skill
+and read tools; inspects assembled instructions before deliberately aborting
+inference; and checks allowed/ARS-denied native writes for two locations in one
+global-config server. It launches a real executable, not a launcher proxy, and
+only stops its own child process. An explicit `ARS_OPENCODE_BINARY` can select
+that executable. The Node 24 gate passed all four cases without skips; the
+enclosing test accounts for the fifth reported pass. No external inference is
+performed: request assembly is inspected and then deliberately interrupted.
 
 `npm ci` reports 24 moderate advisories, with no high or critical findings.
 `npm audit` attributes the direct risk to the required
