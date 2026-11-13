@@ -138,9 +138,20 @@ C:\research\ars-models.json
 
 ## 5. 安装
 
-安装分两步：先预览，确认没问题再真正写入。
+先选一种安装方式。两种方式用同一个安装器，区别是装什么：
 
-### 5.1 预览（不会写任何文件）
+| 方式 | 适合谁 | 装好后有什么 |
+|---|---|---|
+| **插件方式（推荐）** | 想用完整 ARS 工作流 | 5 个技能、16 个 `/ars-*` 命令、4 个子代理、写入范围保护 |
+| **skills 方式** | 只想在 OpenCode 里调用技能 | 5 个技能和筛选 reviewer；**没有** `/ars-*` 命令、插件工具和写入保护 |
+
+下面先讲插件方式。只想装技能的话，直接跳到 5.2。
+
+### 5.1 插件方式（推荐）
+
+安装分三步：预览 → 正式安装 → 检查。
+
+#### 5.1.1 预览（不会写任何文件）
 
 ```powershell
 node "C:\work\academic-research-skills\opencode\install.ts" install --channel plugin --scope project --project "C:\research\my-project"
@@ -148,7 +159,7 @@ node "C:\work\academic-research-skills\opencode\install.ts" install --channel pl
 
 预览会告诉你准备改哪些配置、复制哪些文件、有没有冲突。**先读一遍输出。**
 
-### 5.2 正式安装
+#### 5.1.2 正式安装
 
 确认预览无误后运行：
 
@@ -158,7 +169,7 @@ node "C:\work\academic-research-skills\opencode\install.ts" install --channel pl
 
 `--apply` 才会真正写入。没有它，命令始终只是预览。
 
-### 5.3 检查安装
+#### 5.1.3 检查并重载
 
 ```powershell
 node "C:\work\academic-research-skills\opencode\install.ts" check --channel plugin --scope project --project "C:\research\my-project"
@@ -171,6 +182,40 @@ opencode reload
 ```
 
 如果 `reload` 不生效，直接重启 OpenCode。
+
+### 5.2 只安装技能（skills）
+
+如果你只需要技能，不需要 `/ars-*` 命令和写入保护，用这种方式。它不需要模型映射，也不要传 `--models`。
+
+先预览：
+
+```powershell
+node "C:\work\academic-research-skills\opencode\install.ts" install --channel skills --scope project --project "C:\research\my-project"
+```
+
+确认后正式安装：
+
+```powershell
+node "C:\work\academic-research-skills\opencode\install.ts" install --channel skills --scope project --project "C:\research\my-project" --apply
+```
+
+检查：
+
+```powershell
+node "C:\work\academic-research-skills\opencode\install.ts" check --channel skills --scope project --project "C:\research\my-project"
+```
+
+> skills 方式没有 `/ars-*` 命令、插件工具和写入保护。需要完整功能，回到 5.1 用插件方式。
+
+### 5.3 全局安装
+
+如果希望所有项目共用同一份 ARS 检出，把 `--scope project` 换成 `--scope global`：
+
+```powershell
+node "C:\work\academic-research-skills\opencode\install.ts" install --channel plugin --scope global --project "C:\research\my-project" --models "C:\research\ars-models.json" --apply
+```
+
+全局安装会写 `~/.config/opencode/opencode.json`，所有项目共用同一份 ARS 检出。它不是“每个项目自动切换不同 checkout”的机制。
 
 ---
 
@@ -216,40 +261,7 @@ opencode run --model "commandcode/claude-sonnet-5" "/ars-plan 帮我规划一篇
 
 ---
 
-## 7. 两种安装方式
-
-### 方式 A：插件安装（推荐）
-
-就是上面第 5 步。它会安装：
-
-- 5 个技能
-- 16 个 `/ars-*` 命令
-- 4 个子代理
-- 写入范围保护
-
-### 方式 B：只安装技能（skills）
-
-适合只想在 OpenCode 里使用技能、不需要 `/ars-*` 命令和写入保护的情况：
-
-```powershell
-node "C:\work\academic-research-skills\opencode\install.ts" install --channel skills --scope project --project "C:\research\my-project" --apply
-```
-
-注意：skills 方式**没有** `/ars-*` 命令、插件工具和写入保护。需要完整功能就用方式 A。
-
-### 全局安装
-
-把 `--scope project` 换成 `--scope global`：
-
-```powershell
-node "C:\work\academic-research-skills\opencode\install.ts" install --channel plugin --scope global --project "C:\research\my-project" --models "C:\research\ars-models.json" --apply
-```
-
-全局安装会写 `~/.config/opencode/opencode.json`，所有项目共用同一份 ARS 检出。它不是“每个项目自动切换不同 checkout”的机制。
-
----
-
-## 8. 更新与卸载
+## 7. 更新与卸载
 
 更新插件：
 
@@ -273,7 +285,7 @@ node "C:\work\academic-research-skills\opencode\install.ts" uninstall --channel 
 
 ---
 
-## 9. 常见问题
+## 8. 常见问题
 
 ### 命令提示 `no OpenCode mapping`
 
@@ -314,7 +326,7 @@ C:\research\ars-models.json
 
 ---
 
-## 10. 目前的限制
+## 9. 目前的限制
 
 - 只在 **Windows 11 + OpenCode 2.2.7 + Node 24** 上验证；macOS/Linux 未验证。
 - 完整多代理编排、PDF 导出、Windows durable ledger、Claude/Pi 运行时回归仍未验证；这些是已记录的限制，不是“已经支持”。
