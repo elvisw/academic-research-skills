@@ -53,6 +53,7 @@ import {
 } from "./catalog.ts";
 import {
   agentDifferences,
+  equivalentText,
   legacyAgentSystem,
   loadNativeAgents,
   modelExists,
@@ -61,6 +62,11 @@ import {
   type ModelRef,
   type NativeAgentSpec,
 } from "./setup.ts";
+import {
+  agentFilePath,
+  agentMarkdownDigest,
+  renderAgentMarkdown,
+} from "./agent-storage.ts";
 import { discoverInterpreter } from "./script-runner.ts";
 
 export const INSTALLER_ID = "ars-opencode";
@@ -94,6 +100,11 @@ const IGNORED_SUFFIXES = [".pyc", ".pyo"];
 
 export interface InstallManifestEntry {
   digest: string;
+  /**
+   * Absolute Markdown agent file this record owns. Absent for the pre-Markdown
+   * records, whose ownership is an inline `agents.<id>` configuration value.
+   */
+  path?: string;
   /** The user changed this asset after installation; never remove it. */
   retained?: boolean;
 }
@@ -144,7 +155,7 @@ export interface InstallRequest {
   env?: NodeJS.ProcessEnv;
   now?: Date;
   /** Test-only fault injection; never used by the CLI. */
-  testHooks?: { failAt?: "config" | "instructions" | "manifest" | "skills" | "removal" };
+  testHooks?: { failAt?: "config" | "instructions" | "manifest" | "skills" | "agents" | "removal" };
 }
 
 export type OperationKind =
@@ -172,6 +183,7 @@ export interface InstallReport {
   projectRoot: string;
   configPath: string;
   skillsDir: string | null;
+  agentsDir: string;
   instructionsPath: string | null;
   manifestPath: string;
   stateRoot: string;
@@ -195,6 +207,7 @@ export interface ScopePaths {
   configPath: string;
   existingConfigs: string[];
   skillsDir: string;
+  agentsDir: string;
   instructionPath: string;
   instructionConfigValue: string;
   stateRoot: string;
@@ -294,6 +307,16 @@ function skillsDirFor(scope: Scope, projectRoot: string, home: string, env: Node
   return scope === "global"
     ? join(globalConfigDir(home, env), "skills")
     : join(projectRoot, ".opencode", "skills");
+}
+
+/**
+ * Native Markdown agents live beside the configuration: project scope uses the
+ * project's `.opencode/agents`, global scope the XDG configuration directory.
+ */
+function agentsDirFor(scope: Scope, projectRoot: string, home: string, env: NodeJS.ProcessEnv): string {
+  return scope === "global"
+    ? join(globalConfigDir(home, env), "agents")
+    : join(projectRoot, ".opencode", "agents");
 }
 
 function instructionFor(
@@ -425,6 +448,7 @@ export function resolveScope(request: InstallRequest, packageRoot: string): Scop
     configPath,
     existingConfigs,
     skillsDir: skillsDirFor(scope, projectRoot, home, env),
+    agentsDir: agentsDirFor(scope, projectRoot, home, env),
     instructionPath: instruction.path,
     instructionConfigValue: instruction.configValue,
     stateRoot,
@@ -1264,6 +1288,8 @@ interface ApplyState {
   instructionReferenceAdded: boolean;
   skillWrites: { name: string; source: SkillSource; target: string; expectedDigest: string | null }[];
   skillRemoves: { name: string; target: string; expectedDigest: string }[];
+  agentWrites: { id: string; target: string; content: string; before: string | null }[];
+  agentRemoves: { id: string; target: string; expectedDigest: string }[];
   manifest: InstallManifest | null;
   manifestWrite: boolean;
   manifestDelete: boolean;
@@ -1310,98 +1336,296 @@ interface InstallPlan {
   nextAgents: Record<string, InstallManifestEntry>;
 }
 
+/** Inline agent IDs in the other scope, so a cross-scope shadow is never written. */
+function foreignScopeInlineAgents(
+  paths: ScopePaths,
+  request: InstallRequest,
+): Map<string, string> {
+  const other = paths.scope === "project" ? "global" : "project";
+  const found = new Map<string, string>();
+  for (const candidate of configCandidates(other, paths.projectRoot, paths.home, request.env ?? process.env)) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const agentsNode = getPath(parseConfig(readFileSync(candidate, "utf8"), candidate), ["agents"]);
+      if (!agentsNode || typeof agentsNode !== "object" || Array.isArray(agentsNode)) continue;
+      for (const id of Object.keys(agentsNode)) found.set(id, candidate);
+    } catch {
+      // Another scope's malformed configuration is not this install's to fix.
+    }
+  }
+  return found;
+}
+
 function planAgentEntries(plan: InstallPlan): void {
-  const { request, paths, packageRoot, projectRoot, manifest, desiredAgents, state } = plan;
+  const { paths, manifest, desiredAgents, state } = plan;
   const agentsNode = getPath(plan.currentConfig, ["agents"]);
   const currentAgents =
     agentsNode && typeof agentsNode === "object" && !Array.isArray(agentsNode)
       ? (agentsNode as Record<string, unknown>)
       : {};
+  const foreignInline = foreignScopeInlineAgents(paths, plan.request);
 
   for (const agent of desiredAgents) {
-    const desiredValue = agentConfigValue(agent);
-    const desiredDigest = digestValue(desiredValue);
+    const target = agentFilePath(paths.agentsDir, agent.id);
+    const content = renderAgentMarkdown(agent);
+    const desiredDigest = agentMarkdownDigest(content);
     const current = currentAgents[agent.id];
     const owned = manifest?.agents[agent.id];
-    if (current === undefined) {
+    const fileText = existsSync(target) ? readFileSync(target, "utf8") : null;
+    const foreignPath = foreignInline.get(agent.id);
+
+    if (foreignPath) {
+      state.blockers.push(
+        `agent ${agent.id} is already defined inline as agents.${agent.id} in ` +
+          `${toPosix(foreignPath)} (${paths.scope === "project" ? "global" : "project"} scope), ` +
+          `while this ${paths.scope} install would use the Markdown file ${toPosix(target)}. ` +
+          "Keep one form across scopes; nothing was written for this agent",
+      );
+      state.operations.push({
+        kind: "blocked",
+        target: toPosix(target),
+        detail: `also defined inline in ${toPosix(foreignPath)}`,
+      });
+      continue;
+    }
+
+    if (current !== undefined && fileText !== null) {
+      // One agent, two definitions: the host would have to choose, and this
+      // installer would then own a form the host may ignore.
+      state.blockers.push(
+        `agent ${agent.id} exists twice: Markdown file ${toPosix(target)} and inline ` +
+          `agents.${agent.id} in ${toPosix(paths.configPath)}. Keep exactly one form; ` +
+          "nothing was written for this agent",
+      );
+      state.operations.push({
+        kind: "blocked",
+        target: toPosix(target),
+        detail: `also present as agents.${agent.id} in ${toPosix(paths.configPath)}`,
+      });
+      continue;
+    }
+
+    if (current !== undefined) {
+      planInlineAgent(plan, agent, current, owned);
+      continue;
+    }
+
+    planMarkdownAgent(plan, agent, {
+      target,
+      content,
+      desiredDigest,
+      owned,
+      fileText,
+    });
+  }
+}
+
+/**
+ * The pre-Markdown ownership branch: an inline `agents.<id>` entry already
+ * exists. Story 1.2 migrates those records to files; until then this branch
+ * keeps them correct and never writes a second form for the same agent.
+ */
+function planInlineAgent(
+  plan: InstallPlan,
+  agent: NativeAgentSpec,
+  current: unknown,
+  owned: InstallManifestEntry | undefined,
+): void {
+  const { request, paths, packageRoot, projectRoot, state } = plan;
+  const desiredValue = agentConfigValue(agent);
+  const desiredDigest = digestValue(desiredValue);
+  if (owned?.retained) {
+    // A previously retained user edit keeps its record on every retry; it is
+    // not reclassified as an unowned collision.
+    plan.nextAgents[agent.id] = { digest: digestValue(current), retained: true };
+    state.retained.push(`agents.${agent.id}`);
+    state.operations.push({
+      kind: "retain",
+      target: `agents.${agent.id}`,
+      detail: "previously retained user edit; left untouched and still recorded",
+    });
+    return;
+  }
+  if (owned) {
+    if (equivalentConfigValue(current, desiredValue)) {
+      plan.nextAgents[agent.id] = { digest: digestValue(current) };
+      state.operations.push({ kind: "keep", target: `agents.${agent.id}`, detail: "already current" });
+    } else if (digestValue(current) === owned.digest) {
       state.configText = editConfigChecked(state.configText, paths.configPath, ["agents", agent.id], desiredValue);
       state.configDirty = true;
       plan.nextAgents[agent.id] = { digest: desiredDigest };
       state.operations.push({
-        kind: owned ? "update" : "create",
+        kind: "update",
         target: `agents.${agent.id}`,
-        detail: "portable native agent configuration",
+        detail: "owned entry updated to the current source",
       });
-      continue;
-    }
-    if (owned?.retained) {
-      // A previously retained user edit keeps its record on every retry; it is
-      // not reclassified as an unowned collision.
+    } else {
       plan.nextAgents[agent.id] = { digest: digestValue(current), retained: true };
       state.retained.push(`agents.${agent.id}`);
       state.operations.push({
         kind: "retain",
         target: `agents.${agent.id}`,
-        detail: "previously retained user edit; left untouched and still recorded",
+        detail: "user-modified after installation; left untouched and still recorded",
       });
-      continue;
     }
-    if (owned && !owned.retained) {
-      if (equivalentConfigValue(current, desiredValue)) {
-        plan.nextAgents[agent.id] = { digest: digestValue(current) };
-        state.operations.push({ kind: "keep", target: `agents.${agent.id}`, detail: "already current" });
-      } else if (digestValue(current) === owned.digest) {
-        state.configText = editConfigChecked(state.configText, paths.configPath, ["agents", agent.id], desiredValue);
-        state.configDirty = true;
-        plan.nextAgents[agent.id] = { digest: desiredDigest };
-        state.operations.push({
-          kind: "update",
-          target: `agents.${agent.id}`,
-          detail: "owned entry updated to the current source",
-        });
-      } else {
-        plan.nextAgents[agent.id] = { digest: digestValue(current), retained: true };
-        state.retained.push(`agents.${agent.id}`);
-        state.operations.push({
-          kind: "retain",
-          target: `agents.${agent.id}`,
-          detail: "user-modified after installation; left untouched and still recorded",
-        });
-      }
-      continue;
-    }
-    if (equivalentConfigValue(current, desiredValue)) {
-      state.operations.push({
-        kind: "reuse",
-        target: `agents.${agent.id}`,
-        detail: "identical pre-existing entry reused without claiming ownership",
-      });
-      continue;
-    }
-    const legacy = isVerifiedLegacyAgent(current, agent, packageRoot, projectRoot);
-    if (request.adoptLegacy && legacy) {
-      state.configText = editConfigChecked(state.configText, paths.configPath, ["agents", agent.id], desiredValue);
-      state.configDirty = true;
-      plan.nextAgents[agent.id] = { digest: desiredDigest };
-      state.operations.push({
-        kind: "adopt",
-        target: `agents.${agent.id}`,
-        detail: "verified legacy template adopted and converted to the portable form",
-      });
-      continue;
-    }
+    return;
+  }
+  if (equivalentConfigValue(current, desiredValue)) {
+    state.operations.push({
+      kind: "reuse",
+      target: `agents.${agent.id}`,
+      detail: "identical pre-existing entry reused without claiming ownership",
+    });
+    return;
+  }
+  const legacy = isVerifiedLegacyAgent(current, agent, packageRoot, projectRoot);
+  if (request.adoptLegacy && legacy) {
+    state.configText = editConfigChecked(state.configText, paths.configPath, ["agents", agent.id], desiredValue);
+    state.configDirty = true;
+    plan.nextAgents[agent.id] = { digest: desiredDigest };
+    state.operations.push({
+      kind: "adopt",
+      target: `agents.${agent.id}`,
+      detail: "verified legacy template adopted and converted to the portable form",
+    });
+    return;
+  }
+  state.blockers.push(
+    `agents.${agent.id} already exists with different instructions, mode, permissions or model; ` +
+      (legacy
+        ? "it matches the verified legacy template, so rerun with --adopt-legacy to take ownership"
+        : "refusing to overwrite an unowned entry"),
+  );
+  state.operations.push({
+    kind: "blocked",
+    target: `agents.${agent.id}`,
+    detail: "unowned entry differs from the expected definition",
+  });
+}
+
+/**
+ * Markdown ownership branch. The file digest, not the config value, decides:
+ * equal means this installer may refresh it, different means the user edited
+ * it and it is retained forever.
+ */
+function planMarkdownAgent(
+  plan: InstallPlan,
+  agent: NativeAgentSpec,
+  input: {
+    target: string;
+    content: string;
+    desiredDigest: string;
+    owned: InstallManifestEntry | undefined;
+    fileText: string | null;
+  },
+): void {
+  const { paths, state } = plan;
+  const { target, content, desiredDigest, owned, fileText } = input;
+  const currentDigest = fileText === null ? null : agentMarkdownDigest(fileText);
+  const label = `agents.${agent.id}`;
+
+  if (owned && !owned.path) {
+    // The ownership record still points at an inline value, but that value is
+    // gone. Converting it here would turn a stale record into a Markdown claim
+    // without a migration decision; story 1.2 owns that transition.
     state.blockers.push(
-      `agents.${agent.id} already exists with different instructions, mode, permissions or model; ` +
-        (legacy
-          ? "it matches the verified legacy template, so rerun with --adopt-legacy to take ownership"
-          : "refusing to overwrite an unowned entry"),
+      `agents.${agent.id} has a pre-Markdown ownership record, but no inline entry ` +
+        `exists in ${toPosix(paths.configPath)}. This release does not migrate that ` +
+        "record to Markdown; restore the inline entry or remove the stale ownership record",
     );
     state.operations.push({
       kind: "blocked",
-      target: `agents.${agent.id}`,
-      detail: "unowned entry differs from the expected definition",
+      target: toPosix(target),
+      detail: "stale pre-Markdown ownership record is not converted to a Markdown claim",
     });
+    return;
   }
+
+  if (owned?.retained) {
+    if (fileText === null || currentDigest === null) {
+      state.operations.push({
+        kind: "keep",
+        target: toPosix(target),
+        detail: "previously retained Markdown agent was removed by the user; ownership record dropped",
+      });
+      return;
+    }
+    plan.nextAgents[agent.id] = { path: target, digest: currentDigest, retained: true };
+    state.retained.push(label);
+    state.operations.push({
+      kind: "retain",
+      target: toPosix(target),
+      detail: "previously retained user edit; left untouched and still recorded",
+    });
+    return;
+  }
+
+  if (owned) {
+    if (fileText === null || currentDigest === null) {
+      state.agentWrites.push({ id: agent.id, target, content, before: null });
+      plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
+      state.operations.push({
+        kind: "update",
+        target: toPosix(target),
+        detail: "owned Markdown agent was missing; rewritten from source",
+      });
+    } else if (currentDigest === owned.digest) {
+      if (currentDigest === desiredDigest) {
+        plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
+        state.operations.push({
+          kind: "keep",
+          target: toPosix(target),
+          detail: "Markdown agent already current",
+        });
+      } else {
+        state.agentWrites.push({ id: agent.id, target, content, before: fileText });
+        plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
+        state.operations.push({
+          kind: "update",
+          target: toPosix(target),
+          detail: "owned Markdown agent updated to the current source",
+        });
+      }
+    } else {
+      plan.nextAgents[agent.id] = { path: target, digest: currentDigest, retained: true };
+      state.retained.push(label);
+      state.operations.push({
+        kind: "retain",
+        target: toPosix(target),
+        detail: "user-modified after installation; left untouched and still recorded",
+      });
+    }
+    return;
+  }
+
+  if (currentDigest !== null && fileText !== null) {
+    if (currentDigest === desiredDigest) {
+      state.operations.push({
+        kind: "reuse",
+        target: toPosix(target),
+        detail: "identical pre-existing Markdown agent reused without claiming ownership",
+      });
+      return;
+    }
+    state.blockers.push(
+      `Markdown agent ${toPosix(target)} already exists with different content outside this installer; ` +
+        "refusing to overwrite it. Move it aside or reconcile it manually",
+    );
+    state.operations.push({
+      kind: "blocked",
+      target: toPosix(target),
+      detail: "unowned Markdown agent differs from the source",
+    });
+    return;
+  }
+
+  state.agentWrites.push({ id: agent.id, target, content, before: null });
+  plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
+  state.operations.push({
+    kind: "create",
+    target: toPosix(target),
+    detail: "portable native agent Markdown file",
+  });
 }
 
 function planPluginEntry(plan: InstallPlan): void {
@@ -2105,6 +2329,8 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
     instructionReferenceAdded: false,
     skillWrites: [],
     skillRemoves: [],
+    agentWrites: [],
+    agentRemoves: [],
     manifest,
     manifestWrite: false,
     manifestDelete: false,
@@ -2154,6 +2380,7 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
         state.configDirty ||
         state.skillWrites.length > 0 ||
         state.skillRemoves.length > 0 ||
+        state.agentWrites.length > 0 ||
         state.instructionWrite,
       manifest,
     });
@@ -2166,6 +2393,8 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
   if (state.instructionWrite) state.backupTargets.push(paths.instructionPath);
   for (const write of state.skillWrites) state.backupTargets.push(write.target);
   for (const remove of state.skillRemoves) state.backupTargets.push(remove.target);
+  for (const write of state.agentWrites) state.backupTargets.push(write.target);
+  for (const remove of state.agentRemoves) state.backupTargets.push(remove.target);
   state.backupTargets.push(paths.manifestPath);
 
   const changed =
@@ -2173,6 +2402,8 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
     state.instructionWrite ||
     state.skillWrites.length > 0 ||
     state.skillRemoves.length > 0 ||
+    state.agentWrites.length > 0 ||
+    state.agentRemoves.length > 0 ||
     state.manifestWrite;
 
   if (!changed && blockers.length === 0) {
@@ -2265,6 +2496,7 @@ function finish(input: FinishInput): InstallReport {
     projectRoot: toPosix(paths.projectRoot),
     configPath: toPosix(paths.configPath),
     skillsDir: request.channel === "skills" ? toPosix(paths.skillsDir) : null,
+    agentsDir: toPosix(paths.agentsDir),
     instructionsPath:
       request.channel === "skills" ? toPosix(paths.instructionPath) : null,
     manifestPath: toPosix(paths.manifestPath),
@@ -2627,6 +2859,21 @@ async function applyInstall(input: ApplyInstallInput): Promise<InstallReport> {
       undo.push(fileUndo(paths.instructionPath, before, state.instructionContent, paths.stateRoot));
     }
 
+    if (request.testHooks?.failAt === "agents") {
+      throw new InstallError("test-injected agent write failure");
+    }
+    for (const write of state.agentWrites) {
+      const current = existsSync(write.target) ? readFileSync(write.target, "utf8") : null;
+      if (current !== write.before) {
+        throw new InstallError(
+          `Markdown agent ${toPosix(write.target)} changed while the preview was open; ` +
+            "aborting instead of overwriting a newer edit",
+        );
+      }
+      writeFileStaged(write.target, write.content, write.before, paths.stateRoot);
+      undo.push(fileUndo(write.target, write.before, write.content, paths.stateRoot));
+    }
+
     if (request.testHooks?.failAt === "config") {
       throw new InstallError("test-injected configuration write failure");
     }
@@ -2685,6 +2932,35 @@ async function applyInstall(input: ApplyInstallInput): Promise<InstallReport> {
   } finally {
     lock.release();
   }
+}
+
+/** Frontmatter text without its fences; empty when the file has none. */
+function markdownFrontmatterText(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return "";
+  const end = normalized.indexOf("\n---", 4);
+  return end === -1 ? "" : normalized.slice(4, end);
+}
+
+/** Markdown body without its frontmatter, trimmed like the source prompts. */
+function markdownBodyText(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return normalized.trim();
+  const end = normalized.indexOf("\n---", 4);
+  return end === -1 ? normalized.trim() : normalized.slice(end + 4).replace(/^\n/, "").trim();
+}
+
+/** Compare a Markdown agent file with the rendered expectation. */
+function markdownAgentDifferences(agent: NativeAgentSpec, content: string): string[] {
+  const expected = renderAgentMarkdown(agent);
+  const differences: string[] = [];
+  if (markdownFrontmatterText(content) !== markdownFrontmatterText(expected)) {
+    differences.push("frontmatter (description, mode, model or permissions)");
+  }
+  if (!equivalentText(markdownBodyText(content), agent.system)) {
+    differences.push("instructions");
+  }
+  return differences;
 }
 
 interface CheckInput {
@@ -2817,29 +3093,68 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
     agents && typeof agents === "object" && !Array.isArray(agents)
       ? (agents as Record<string, unknown>)
       : {};
+  const foreignInline = foreignScopeInlineAgents(paths, request);
   for (const agent of desiredAgents) {
     const current = installedAgents[agent.id];
-    if (current === undefined) {
-      pushCheck(checks, `agent:${agent.id}`, "warn", "not present in the configuration on disk");
+    const target = agentFilePath(paths.agentsDir, agent.id);
+    const fileText = existsSync(target) ? readFileSync(target, "utf8") : null;
+    const foreignPath = foreignInline.get(agent.id);
+    if (foreignPath) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "error",
+        `also defined inline as agents.${agent.id} in ${toPosix(foreignPath)} (${paths.scope === "project" ? "global" : "project"} scope); keep one form across scopes`,
+      );
       continue;
     }
-    const differences = agentDifferences(agent, {
-      id: agent.id,
-      system:
-        typeof (current as Record<string, unknown>).system === "string"
-          ? ((current as Record<string, unknown>).system as string)
-          : undefined,
-      mode: (current as Record<string, unknown>).mode as NativeAgentSpec["mode"] | undefined,
-      permissions: (current as Record<string, unknown>).permissions as never,
-      model: (current as Record<string, unknown>).model as never,
-    });
+    if (current !== undefined && fileText !== null) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "error",
+        `defined twice: Markdown file ${toPosix(target)} and agents.${agent.id} in ${toPosix(paths.configPath)}; keep one form`,
+      );
+      continue;
+    }
+    if (current !== undefined) {
+      const differences = agentDifferences(agent, {
+        id: agent.id,
+        system:
+          typeof (current as Record<string, unknown>).system === "string"
+            ? ((current as Record<string, unknown>).system as string)
+            : undefined,
+        mode: (current as Record<string, unknown>).mode as NativeAgentSpec["mode"] | undefined,
+        permissions: (current as Record<string, unknown>).permissions as never,
+        model: (current as Record<string, unknown>).model as never,
+      });
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        differences.length ? "warn" : "ok",
+        differences.length
+          ? `inline agents.${agent.id} on disk with different ${differences.join(", ")}`
+          : `inline agents.${agent.id} on disk with the expected instructions, mode, permissions and model`,
+      );
+      continue;
+    }
+    if (fileText === null) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "warn",
+        `not present: no Markdown file at ${toPosix(target)} and no agents.${agent.id} in ${toPosix(paths.configPath)}`,
+      );
+      continue;
+    }
+    const differences = markdownAgentDifferences(agent, fileText);
     pushCheck(
       checks,
       `agent:${agent.id}`,
       differences.length ? "warn" : "ok",
       differences.length
-        ? `on disk with different ${differences.join(", ")}`
-        : "on disk with the expected instructions, mode, permissions and model",
+        ? `Markdown file ${toPosix(target)} differs in ${differences.join(", ")}`
+        : `Markdown file ${toPosix(target)} has the expected frontmatter and instructions`,
     );
   }
 
@@ -2914,6 +3229,7 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
     projectRoot: toPosix(paths.projectRoot),
     configPath: toPosix(paths.configPath),
     skillsDir: request.channel === "skills" ? toPosix(paths.skillsDir) : null,
+    agentsDir: toPosix(paths.agentsDir),
     instructionsPath: request.channel === "skills" ? toPosix(paths.instructionPath) : null,
     manifestPath: toPosix(paths.manifestPath),
     stateRoot: toPosix(paths.stateRoot),
@@ -2973,6 +3289,8 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
     instructionReferenceAdded: false,
     skillWrites: [],
     skillRemoves: [],
+    agentWrites: [],
+    agentRemoves: [],
     manifest,
     manifestWrite: false,
     manifestDelete: false,
@@ -3007,6 +3325,34 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
       ? (agents as Record<string, unknown>)
       : {};
   for (const [id, owned] of Object.entries(manifest.agents)) {
+    if (owned.path) {
+      if (!existsSync(owned.path)) {
+        // Already gone: nothing to remove or retain.
+        delete nextManifest.agents[id];
+        continue;
+      }
+      const currentText = readFileSync(owned.path, "utf8");
+      const currentDigest = agentMarkdownDigest(currentText);
+      if (!owned.retained && currentDigest === owned.digest) {
+        state.agentRemoves.push({ id, target: owned.path, expectedDigest: currentDigest });
+        state.backupTargets.push(owned.path);
+        delete nextManifest.agents[id];
+        operations.push({
+          kind: "remove",
+          target: toPosix(owned.path),
+          detail: "unchanged owned Markdown agent removed",
+        });
+      } else {
+        retained.push(`agents.${id}`);
+        nextManifest.agents[id] = { ...owned, digest: currentDigest, retained: true };
+        operations.push({
+          kind: "retain",
+          target: toPosix(owned.path),
+          detail: "changed after installation; Markdown file and ownership record preserved",
+        });
+      }
+      continue;
+    }
     const current = agentRecord[id];
     if (current === undefined) {
       delete nextManifest.agents[id];
@@ -3148,6 +3494,7 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
     configDirty ||
     state.instructionDelete ||
     state.skillRemoves.length > 0 ||
+    state.agentRemoves.length > 0 ||
     state.manifestDelete ||
     manifest !== null;
 
@@ -3230,9 +3577,46 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
         nextManifest.pluginDigest = manifest.pluginDigest;
         if (manifest.pluginRetained) nextManifest.pluginRetained = true;
       }
+      for (const remove of state.agentRemoves) {
+        const target = toPosix(remove.target);
+        const index = operations.findIndex(
+          (operation) => operation.kind === "remove" && operation.target === target,
+        );
+        if (index !== -1) {
+          operations[index] = {
+            kind: "retain",
+            target,
+            detail: "left in place because at least one skill removal failed",
+          };
+        }
+      }
+      state.agentRemoves.length = 0;
       warnings.push(
-        "configuration references were left in place because at least one skill removal failed; retry after fixing the cause",
+        "configuration references and Markdown agents were left in place because at least one skill removal failed; retry after fixing the cause",
       );
+    }
+    if (!removalFailed) {
+      // Markdown agents are files, not config references: remove them only when
+      // nothing else failed, so a retry never loses the ownership record of a
+      // file that is still there.
+      for (const remove of state.agentRemoves) {
+        if (!existsSync(remove.target)) continue;
+        const current = readFileSync(remove.target, "utf8");
+        if (agentMarkdownDigest(current) !== remove.expectedDigest) {
+          throw new InstallError(
+            `Markdown agent ${toPosix(remove.target)} changed while the preview was open; aborting`,
+          );
+        }
+        if (request.testHooks?.failAt === "removal") {
+          throw new InstallError("test-injected removal failure");
+        }
+        const backup = join(backupDir, "external", sha256(remove.target).slice(0, 12), "asset");
+        undo.push(() => {
+          if (existsSync(remove.target)) return;
+          if (existsSync(backup)) copyBackup(backup, remove.target);
+        });
+        unlinkSync(remove.target);
+      }
     }
     if (state.instructionDelete && manifest.instructions) {
       try {
@@ -3357,6 +3741,7 @@ function finishUninstall(
     projectRoot: toPosix(paths.projectRoot),
     configPath: toPosix(paths.configPath),
     skillsDir: request.channel === "skills" ? toPosix(paths.skillsDir) : null,
+    agentsDir: toPosix(paths.agentsDir),
     instructionsPath: request.channel === "skills" ? toPosix(paths.instructionPath) : null,
     manifestPath: toPosix(paths.manifestPath),
     stateRoot: toPosix(paths.stateRoot),
@@ -3381,6 +3766,7 @@ export function formatInstallReport(report: InstallReport): string {
     `project root: ${report.projectRoot}`,
     `config: ${report.configPath}`,
     ...(report.skillsDir ? [`skills: ${report.skillsDir}`] : []),
+    `agents: ${report.agentsDir}`,
     ...(report.instructionsPath ? [`instructions: ${report.instructionsPath}`] : []),
     `state: ${report.stateRoot}`,
     "",

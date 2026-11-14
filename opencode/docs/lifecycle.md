@@ -4,7 +4,7 @@ How to update, uninstall, switch channels and move an installation without losin
 
 - **Update (plugin):** pull the ARS checkout, then run
   `node "C:/work/academic-research-skills/opencode/install.ts" update --channel plugin --scope project --project "C:/research/my-project" --apply` to refresh owned agent
-  entries and the plugin options. The plugin reads skills and commands at load
+  files and the plugin options. The plugin reads skills and commands at load
   time; a running host needs `/reload`. Re-run `npm ci`, `npm run typecheck` and
   `npm test` in `opencode/` when the adapter itself changed.
 - **Update (skills):** pull the checkout, then run
@@ -15,7 +15,7 @@ How to update, uninstall, switch channels and move an installation without losin
   update or uninstall; a failed instruction removal is retried by the next
   uninstall.
 - **Uninstall:** `node "C:/work/academic-research-skills/opencode/install.ts" uninstall --channel <plugin|skills> --scope project --project "C:/research/my-project" --apply`.
-  Only unchanged owned entries are removed. Modified agents, skills and
+  Only unchanged owned entries are removed. Modified agent files, skills and
   instruction files survive with their ownership records; a modified instruction
   file is kept together with its `instructions` reference. Uninstall never
   restores an old whole-config backup over later edits.
@@ -36,5 +36,5 @@ How to update, uninstall, switch channels and move an installation without losin
   proof that it is installed.
 
 Manual installs keep the old rule: remove the hand-merged plugin and agent
-entries yourself. The installer reports what it owns and never claims unrelated
+files yourself. The installer reports what it owns and never claims unrelated
 entries.

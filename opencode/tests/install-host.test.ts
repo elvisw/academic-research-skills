@@ -9,13 +9,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runInstaller } from "../src/install.ts";
-import { agentDifferences, loadNativeAgents } from "../src/setup.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const enabled = process.env.ARS_HOST_INSTALL === "1" || process.env.npm_lifecycle_event === "test:host:install";
 const posix = (p: string) => p.replaceAll("\\", "/");
 const expectedSkills = ["academic-paper", "academic-paper-reviewer", "academic-pipeline", "deep-research", "sr-screener"];
-const expectedAgents = ["research-architect-agent", "synthesis-agent", "report-compiler-agent", "screening-reviewer-agent"];
+
 const model = { providerID: "ars-install-test", model: "never-dispatch" };
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -160,14 +159,9 @@ test("pinned isolated host: four installation variants and same-server project s
                 ? join(project, ".opencode", "skills", skill.id) : join(home, ".config", "opencode", "skills", skill.id);
               assert.equal(posix(dirname(skill.path)), posix(expectedBase));
             }
-            const ours = inventory.agents.filter((a: any) => expectedAgents.includes(a.id));
-            assert.equal(ours.length, channel === "plugin" ? 4 : 1);
-            const expected = loadNativeAgents(repoRoot, {}, [], { validateModels: false }).agents;
-            for (const agent of ours) {
-              const spec = expected.find((a) => a.id === agent.id)!;
-              assert.deepEqual(agentDifferences(spec, agent), [], `real agent contract ${agent.id}`);
-              for (const location of projects) assert.equal(agent.system.includes(posix(location)), false, "global native system is project-portable");
-            }
+            // Markdown agent loading is a 2.3.0 capability covered by
+            // `test:host:agents`; this pinned 2.2.7 gate deliberately covers
+            // installation, skills, commands and the write guard only.
             assert.equal(inventory.commands.filter((n: string) => n.startsWith("ars-")).length, channel === "plugin" ? 16 : 0);
             if (channel === "plugin") assert.equal(inventory.status.metadata.guard, "active");
             else assert.equal(inventory.toolIDs.some((id: string) => id === "ars_screening"), false);

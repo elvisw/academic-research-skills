@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "note": "Frontmatter and body-digest golden for renderAgentMarkdown, captured before the Markdown writer landed. The digest covers NativeAgentSpec.system with LF line endings and the package root replaced by <package-root>; the test compares it so a source wording change surfaces here.",
+  "agents": {
+    "research-architect-agent": {
+      "description": "Designs the methodological blueprint; selects research paradigm, method, data strategy, and analytical framework",
+      "bodySha256": "f37fadee127ef3b0c579846ea67f7ba3c46ec6bcadf4950ae0d0b6768aaacf43",
+      "mode": "subagent",
+      "model": null,
+      "permissionCount": 9,
+      "frontmatter": "description: \"Designs the methodological blueprint; selects research paradigm, method, data strategy, and analytical framework\"\nmode: subagent\npermissions:\n  - action: read\n    resource: \"*\"\n    effect: allow\n  - action: edit\n    resource: \"*\"\n    effect: allow\n  - action: grep\n    resource: \"*\"\n    effect: allow\n  - action: glob\n    resource: \"*\"\n    effect: allow\n  - action: shell\n    resource: \"*\"\n    effect: deny\n  - action: subagent\n    resource: \"*\"\n    effect: deny\n  - action: webfetch\n    resource: \"*\"\n    effect: deny\n  - action: websearch\n    resource: \"*\"\n    effect: deny\n  - action: skill\n    resource: \"*\"\n    effect: deny"
+    },
+    "synthesis-agent": {
+      "description": "Integrates findings across sources, resolves evidence conflicts, and maps knowledge gaps",
+      "bodySha256": "b650e6ece75309ce924f9154c89a15b0f5e429890f412519092dcc56efa0d2e1",
+      "mode": "subagent",
+      "model": null,
+      "permissionCount": 9,
+      "frontmatter": "description: Integrates findings across sources, resolves evidence conflicts, and maps knowledge gaps\nmode: subagent\npermissions:\n  - action: read\n    resource: \"*\"\n    effect: allow\n  - action: edit\n    resource: \"*\"\n    effect: allow\n  - action: grep\n    resource: \"*\"\n    effect: allow\n  - action: glob\n    resource: \"*\"\n    effect: allow\n  - action: shell\n    resource: \"*\"\n    effect: deny\n  - action: subagent\n    resource: \"*\"\n    effect: deny\n  - action: webfetch\n    resource: \"*\"\n    effect: deny\n  - action: websearch\n    resource: \"*\"\n    effect: deny\n  - action: skill\n    resource: \"*\"\n    effect: deny"
+    },
+    "report-compiler-agent": {
+      "description": "Transforms research findings into polished APA 7.0 academic reports; activated in Phase 4 and Phase 6",
+      "bodySha256": "ce7a2d5140bc1286f56a7a00e1921f8b76c2507b2e6339bea331c06b02de1988",
+      "mode": "subagent",
+      "model": null,
+      "permissionCount": 9,
+      "frontmatter": "description: \"Transforms research findings into polished APA 7.0 academic reports; activated in Phase 4 and Phase 6\"\nmode: subagent\npermissions:\n  - action: read\n    resource: \"*\"\n    effect: allow\n  - action: edit\n    resource: \"*\"\n    effect: allow\n  - action: grep\n    resource: \"*\"\n    effect: allow\n  - action: glob\n    resource: \"*\"\n    effect: allow\n  - action: shell\n    resource: \"*\"\n    effect: deny\n  - action: subagent\n    resource: \"*\"\n    effect: deny\n  - action: webfetch\n    resource: \"*\"\n    effect: deny\n  - action: websearch\n    resource: \"*\"\n    effect: deny\n  - action: skill\n    resource: \"*\"\n    effect: deny"
+    },
+    "screening-reviewer-agent": {
+      "description": "Blinded screening reviewer for sr-screener: applies a confirmed protocol to one batch of records or one full-text report and returns one decision per record",
+      "bodySha256": "9b67b7f7c72e49ac0a1b8f2e8963207adf45c9fb4866cabdfe3c94f551df040b",
+      "mode": "subagent",
+      "model": null,
+      "permissionCount": 8,
+      "frontmatter": "description: \"Blinded screening reviewer for sr-screener: applies a confirmed protocol to one batch of records or one full-text report and returns one decision per record\"\nmode: subagent\npermissions:\n  - action: read\n    resource: \"*\"\n    effect: allow\n  - action: grep\n    resource: \"*\"\n    effect: allow\n  - action: shell\n    resource: \"*\"\n    effect: deny\n  - action: subagent\n    resource: \"*\"\n    effect: deny\n  - action: webfetch\n    resource: \"*\"\n    effect: deny\n  - action: websearch\n    resource: \"*\"\n    effect: deny\n  - action: skill\n    resource: \"*\"\n    effect: deny\n  - action: edit\n    resource: \"*\"\n    effect: deny"
+    }
+  },
+  "variant": {
+    "id": "synthesis-agent",
+    "model": "probe/model#high",
+    "frontmatter": "description: Integrates findings across sources, resolves evidence conflicts, and maps knowledge gaps\nmode: subagent\nmodel: probe/model#high\npermissions:\n  - action: read\n    resource: \"*\"\n    effect: allow\n  - action: edit\n    resource: \"*\"\n    effect: allow\n  - action: grep\n    resource: \"*\"\n    effect: allow\n  - action: glob\n    resource: \"*\"\n    effect: allow\n  - action: shell\n    resource: \"*\"\n    effect: deny\n  - action: subagent\n    resource: \"*\"\n    effect: deny\n  - action: webfetch\n    resource: \"*\"\n    effect: deny\n  - action: websearch\n    resource: \"*\"\n    effect: deny\n  - action: skill\n    resource: \"*\"\n    effect: deny"
+  }
+}

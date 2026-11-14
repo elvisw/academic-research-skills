@@ -36,6 +36,10 @@ npm test
 # Opt-in real-host installation test (pinned Windows/OpenCode 2.2.7/Node 24+).
 # This explicit command enables the gate; missing prerequisites fail, not skip.
 npm run test:host:install
+
+# Opt-in real-host Markdown agent probe (OpenCode 2.3.x/Node 24+).
+# Records project-Markdown > project-config > global-Markdown > global-config.
+npm run test:host:agents
 ```
 
 `npm test` runs the installer matrix: both channels at both scopes, JSONC
@@ -43,10 +47,19 @@ comment/Unicode/secret preservation, preview/apply idempotence, model options,
 complete skill trees, managed instructions, modified-bundle retention, retirement
 of unchanged owned assets, partial uninstall and retry records, legacy adoption
 only with `--adopt-legacy`, malformed-config abort, lock contention, rollback
-after a failed write, and read-only checks. Environment isolation uses a
+after a failed write, and read-only checks. Markdown agents are covered by
+`tests/agent-storage.test.ts` (frontmatter golden, YAML quoting, ordered
+permissions, `provider/model#variant`, exact body) plus installer cases for new
+installs writing no `agents.<id>`, digest-based update/retention/removal,
+unowned-file collisions, dual-form refusal and rollback of written agent files.
+Environment isolation uses a
 temporary HOME/USERPROFILE/XDG config/data/cache/state plus `ProgramData`.
-The host gate additionally isolates APPDATA/LOCALAPPDATA, temp directories and
-credentials; checks actual host data/config/cache paths; invokes native skill
+`test:host:install` is pinned to OpenCode 2.2.7 and covers installation,
+skills, commands and the write guard. It does not assert Markdown agent loading:
+that capability is covered by `test:host:agents` on 2.3.x, and 2.2.7 Markdown
+loading remains unverified. The host gate additionally isolates
+APPDATA/LOCALAPPDATA, temp directories and credentials; checks actual host
+data/config/cache paths; invokes native skill
 and read tools; inspects assembled instructions before deliberately aborting
 inference; and checks allowed/ARS-denied native writes for two locations in one
 global-config server. It launches a real executable, not a launcher proxy, and

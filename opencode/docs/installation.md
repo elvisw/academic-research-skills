@@ -4,8 +4,10 @@ Detailed prerequisites, channels, installer options, paths, conservative behavio
 
 ## Dependencies
 
-- Node 24+ and npm. Run `npm ci` in `opencode/` before the first install. Only
-  Windows 11 + OpenCode 2.2.7 + Node 24 is validated; macOS and Linux paths are
+- Node 24+ and npm. Run `npm ci` in `opencode/` before the first install. Windows
+  11 + Node 24 is validated: the pinned 2.2.7 host covers registration, skills,
+  commands and the write guard, while Markdown agent loading is validated on
+  2.3.0. Markdown loading on 2.2.7 is unverified. macOS and Linux paths are
   implemented but untested in this repository.
 - A complete ARS checkout: the five skill directories, `.claude-plugin/`,
   `shared/`, `scripts/` and the checked-out `opencode/` package. The installer
@@ -31,8 +33,8 @@ boundary. For the canonical command sequence, see
 
 | Channel | What it installs | What it does not install |
 |---|---|---|
-| `plugin` | The adapter registration plus its four portable native agents. The plugin supplies the five skills, sixteen `/ars-*` commands, adapter tools and write-scope guard at runtime. | No skill copy. A second skills installation is never required. |
-| `skills` | The five complete skill directories in native OpenCode discovery, the `screening-reviewer-agent` native subagent, and one managed instruction file. Project scope embeds the routing core; global scope writes a compatibility note only. | No plugin entry, commands, adapter tools, hooks or write-scope guard. `sr-screener` uses its own reviewer, not plugin dispatch. |
+| `plugin` | The adapter registration plus its four portable native agents, written as Markdown agent files under the `agents` directory. The plugin supplies the five skills, sixteen `/ars-*` commands, adapter tools and write-scope guard at runtime. | No skill copy. A second skills installation is never required. |
+| `skills` | The five complete skill directories in native OpenCode discovery, the `screening-reviewer-agent` native subagent as a Markdown agent file, and one managed instruction file. Project scope embeds the routing core; global scope writes a compatibility note only. | No plugin entry, commands, adapter tools, hooks or write-scope guard. `sr-screener` uses its own reviewer, not plugin dispatch. |
 
 These are alternative routes, not four installations to stack. For a global
 plugin use `--scope global` with the same checkout/models profile. For skills-only
@@ -66,6 +68,10 @@ Installation paths:
   `<project>/.opencode/ars-instructions.md`, referenced from `instructions`.
 - Global skills: `~/.config/opencode/skills/<name>/`, managed instructions at
   `~/.config/opencode/ars-instructions.md`.
+- Project agents: `<project>/.opencode/agents/<id>.md` — one Markdown file per
+  agent, discovered by the OpenCode 2.3.0 host without any `agents` configuration.
+- Global agents: `~/.config/opencode/agents/<id>.md` (respects
+  `XDG_CONFIG_HOME`).
 
 The install is conservative:
 
@@ -99,6 +105,15 @@ The install is conservative:
   retrying an update; the installer never silently discards them.
 - Identical pre-existing assets are reused without claiming ownership. A
   differing unowned asset is a collision and blocks the run.
+- Native agents are Markdown files, so a new install writes no `agents.<id>`
+  values. Frontmatter carries the description, `mode: subagent`, the optional
+  `model: provider/model#variant` and the ordered permission list; the body is
+  the exact source system prompt. A differing unowned file is a collision; an
+  identical unowned file is reused without ownership. One agent ID defined both
+  as a file and inline is refused before any write.
+- A pre-Markdown inline `agents.<id>` record stays on its old branch: it is
+  refreshed in place and removed from the configuration on uninstall. This
+  release never rewrites it as a file, and never writes both forms for one ID.
 - A legacy fixed-root agent template is recognised but adopted only with
   `--adopt-legacy`; an install request alone does not take ownership.
 
@@ -119,11 +134,19 @@ The plugin can still be added by hand. Project config example:
 
 An absolute path also works. `repoRoot` is derived from the adapter's own
 location; set it only when the package is moved away from the ARS checkout.
-The four native agents still need their `agents.<id>` entries. Use
-`ars_opencode_status` (read-only) to request one complete agent fragment at a
-time; a single bundle would exceed the host's tool-output limit. Generated agent
-instructions are project-portable and embed only the checkout root. A collision
-with an existing command, skill or agent is refused rather than overwritten.
+Installed native agents are Markdown files: write
+`.opencode/agents/<id>.md` (or `~/.config/opencode/agents/<id>.md` for a global
+profile) with `description`, `mode: subagent`, the optional
+`model: provider/model#variant` and the ordered `permissions` list in the
+frontmatter, and the agent's system prompt as the body. `ars_opencode_status`
+(read-only) still returns the pre-Markdown inline `agents.<id>` fragment for
+existing inline installations; that fragment is not a Markdown file, so do not
+merge it into a new Markdown install. Use the installer for a new install, or
+take its description, permissions and system prompt as the source text when
+writing the file. The tool returns one agent at a time because a single bundle
+would exceed the host's tool-output limit. Generated agent instructions are
+project-portable and embed only the checkout root. A collision with an existing
+command, skill or agent is refused rather than overwritten.
 
 The adapter also registers two other tools: `ars_run_script` (shell-free CLI
 execution, host-permission checked) and `ars_screening` (sr-screener dispatch).

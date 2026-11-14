@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parse } from "jsonc-parser";
 import {
+  digestValue,
   InstallError,
   parseModelsArgument,
   runInstaller,
@@ -22,6 +23,7 @@ import {
   type InstallRequest,
   type Scope,
 } from "../src/install.ts";
+import { loadNativeAgents } from "../src/setup.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -139,16 +141,40 @@ test("skills preview writes no skills, instructions, config or state", async () 
   }
 });
 
-test("an owned agent survives via normalized equivalence but remains removable", async () => {
+test("an owned inline agent survives via normalized equivalence but remains removable", async () => {
   const fixture = makeFixture();
   try {
     const first = await install(fixture, "plugin", "project");
     assert.equal(first.ok, true, first.blockers.join("\n"));
+    // Story 1.1 writes Markdown; this test keeps the pre-Markdown inline shape
+    // (config entry + digest record) covered, because story 1.2 migrates it.
+    rmSync(first.agentsDir, { recursive: true, force: true });
     const config = readJsonc(projectConfig(fixture));
-    const agents = config.agents as Record<string, Record<string, unknown>>;
-    const original = agents["synthesis-agent"]!.system as string;
-    agents["synthesis-agent"]!.system = original.replace(/\n/g, " \n");
+    const manifest = JSON.parse(readFileSync(first.manifestPath, "utf8"));
+    const { agents: specs } = loadNativeAgents(fixture.packageRoot, {}, [], {
+      validateModels: false,
+    });
+    const inline: Record<string, unknown> = {};
+    for (const spec of specs) {
+      const value = {
+        description: spec.description,
+        mode: spec.mode,
+        system: spec.system,
+        ...(spec.model ? { model: spec.model } : {}),
+        permissions: spec.permissions,
+      };
+      inline[spec.id] = value;
+      manifest.agents[spec.id] = { digest: digestValue(value) };
+    }
+    config.agents = inline;
     writeFileSync(projectConfig(fixture), `${JSON.stringify(config, null, 2)}\n`);
+    writeFileSync(first.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const seeded = readJsonc(projectConfig(fixture));
+    const inlineAgents = seeded.agents as Record<string, Record<string, unknown>>;
+    const original = inlineAgents["synthesis-agent"]!.system as string;
+    inlineAgents["synthesis-agent"]!.system = original.replace(/\n/g, " \n");
+    writeFileSync(projectConfig(fixture), `${JSON.stringify(seeded, null, 2)}\n`);
 
     const updated = await runInstaller(
       request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
@@ -222,7 +248,12 @@ test("a UTF-8 BOM configuration is accepted and rewritten without the BOM", asyn
     assert.equal(report.ok, true, report.blockers.join("\n"));
     const text = readFileSync(projectConfig(fixture), "utf8");
     assert.equal(text.charCodeAt(0), 0x7b);
-    assert.equal((parse(text) as Record<string, unknown>).agents !== undefined, true);
+    const parsed = parse(text) as Record<string, unknown>;
+    assert.equal(parsed.agents, undefined, "Markdown agents leave the config alone");
+    assert.ok(
+      existsSync(join(fixture.project, ".opencode", "agents", "synthesis-agent.md")),
+      "the agent was written as Markdown",
+    );
   } finally {
     fixture.cleanup();
   }

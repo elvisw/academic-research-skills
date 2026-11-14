@@ -702,7 +702,7 @@ export default Plugin.define({
         editor.add({
           name: "ars_opencode_status",
           description:
-            "Read-only ARS OpenCode installation check. Reports counts, effective agents/models/permissions, model mappings, guard status and collisions. Pass `agent` to get that one agent's full merge fragment; without it, no fragment is returned.",
+            "Read-only ARS OpenCode installation check. Reports counts, effective agents/models/permissions, model mappings, guard status and collisions. Pass `agent` to get that one agent's legacy inline preview fragment; without it, no fragment is returned.",
           input: {
             type: "object",
             properties: {
@@ -776,7 +776,7 @@ export default Plugin.define({
                 ...NATIVE_ARS_AGENT_IDS.map((id) => `  - ${id}`),
                 "",
                 "A single fragment for all four agents would exceed the host's tool-output limit, so it is not returned as one bundle.",
-                "Call this tool once per agent with `agent=<id>` to get that agent's complete merge fragment (plugin entry + one agent).",
+                "Call this tool once per agent with `agent=<id>` to get that agent's legacy inline preview (plugin entry plus one agents.<id> value). It is not a Markdown file; use the installer for a new Markdown install.",
               );
               return { content: lines.join("\n"), metadata };
             }
@@ -798,7 +798,7 @@ export default Plugin.define({
             const entryModel = (entry as { model?: unknown }).model;
             lines.push(
               "",
-              `Preview fragment for ${agentId} (merge the plugin entry and agents.${agentId} into your config):`,
+              `Legacy inline preview for ${agentId} (for an existing inline install only; do not merge this into a new Markdown install):`,
               `model: ${
                 entryModel === undefined
                   ? "inherit (no models.agents mapping)"
