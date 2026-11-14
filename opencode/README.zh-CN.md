@@ -275,7 +275,7 @@ opencode
 | `/ars-lit-review` | 做文献综述 |
 | `/ars-full` | 跑完整研究流水线 |
 | `/ars-revision` | 修改已有论文 |
-| `/ars-reviewer` | 审查论文并给出审稿意见 |
+| `/ars-reviewer` | 审查论文并给出审稿意见；`full` 模式还会额外生成作者信 |
 
 也可以不进入交互界面，直接跑一次：
 

@@ -189,7 +189,7 @@ Common commands:
 | `/ars-lit-review` | Run a literature review |
 | `/ars-full` | Run the complete research pipeline |
 | `/ars-revision` | Revise an existing paper |
-| `/ars-reviewer` | Review a paper and produce reviewer comments |
+| `/ars-reviewer` | Review a paper and produce reviewer comments; a `full` review also produces an author letter |
 
 If `/` does not show `ars-*` commands, rerun `check` and reload the host.
 
