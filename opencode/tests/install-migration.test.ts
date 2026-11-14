@@ -126,6 +126,46 @@ function agentIds(legacy: LegacyFixture): string[] {
   return Object.keys(legacy.configAgents);
 }
 
+function projectConfigPath(fixture: Fixture): string {
+  return join(fixture.project, "opencode.json");
+}
+
+function projectAgentPath(fixture: Fixture, id: string): string {
+  return join(fixture.project, ".opencode", "agents", `${id}.md`);
+}
+
+function manifestPathFor(fixture: Fixture): string {
+  return resolveScope(request(fixture, "plugin", "project", "update"), repoRoot).manifestPath;
+}
+
+function toCrlf(text: string): string {
+  return text.replace(/\r?\n/g, "\r\n");
+}
+
+/** Reproduce process death after the agent files and before config/manifest. */
+async function crashAfterAgents(fixture: Fixture): Promise<void> {
+  await assert.rejects(
+    () =>
+      runInstaller({
+        ...request(fixture, "plugin", "project", "update"),
+        testHooks: { crashAfter: "agents" },
+      }),
+    /crash after the Markdown agent write/,
+  );
+}
+
+/** Reproduce process death after config is written but before the manifest. */
+async function crashAfterConfig(fixture: Fixture): Promise<void> {
+  await assert.rejects(
+    () =>
+      runInstaller({
+        ...request(fixture, "plugin", "project", "update"),
+        testHooks: { crashAfter: "config" },
+      }),
+    /crash after the configuration write/,
+  );
+}
+
 test("project plugin fixture: check, migrate, idempotence", async () => {
   const fixture = makeFixture();
   try {
@@ -252,11 +292,12 @@ test("a modified inline entry blocks the whole migration", async () => {
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
     const before = readFileSync(configPath, "utf8");
     const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
-    assert.equal(checked.checks.find((item) => item.id === "agent:synthesis-agent")?.status, "error");
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "error");
+    assert.match(verdict?.detail ?? "", /no Markdown file exists/);
     const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
     assert.equal(updated.ok, false);
-    assert.match(updated.blockers.join("\n"), /synthesis-agent/);
-    assert.match(updated.blockers.join("\n"), /whole migration is stopped/);
+    assert.deepEqual(updated.blockers, [verdict?.detail], "one manual action for check and update");
     assert.equal(readFileSync(configPath, "utf8"), before);
     assert.equal(existsSync(join(fixture.project, ".opencode", "agents")), false);
   } finally {
@@ -435,6 +476,315 @@ test("a legacy inline-only uninstall removes unchanged owned values and keeps mo
     assert.deepEqual(Object.keys(after.agents ?? {}), ["synthesis-agent"]);
     assert.ok(result.retained.includes("agents.synthesis-agent"));
     assert.equal(existsSync(join(fixture.project, ".opencode", "agents")), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a crash after the agent write is recovered by one update and then a no-op", async () => {
+  const fixture = makeFixture();
+  try {
+    const legacy = materialize(fixture, "plugin", "project");
+    const configPath = projectConfigPath(fixture);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.theme = "tokyonight";
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const configBeforeCrash = readFileSync(configPath, "utf8");
+    const body = String(legacy.configAgents["synthesis-agent"]!.system).replace(/\r\n/g, "\n");
+
+    await crashAfterAgents(fixture);
+
+    const target = projectAgentPath(fixture, "synthesis-agent");
+    assert.ok(existsSync(target), "the crashed run left the Markdown file");
+    assert.equal(readFileSync(configPath, "utf8"), configBeforeCrash, "the config was not rewritten");
+    const crashedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.ok(crashedConfig.agents["synthesis-agent"], "the inline entry remains");
+    const crashedManifest = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8"));
+    assert.equal(crashedManifest.agents["synthesis-agent"].path, undefined);
+    assert.equal(typeof crashedManifest.agents["synthesis-agent"].digest, "string");
+    assert.ok(readFileSync(target, "utf8").includes(body), "the agent body survives the crash");
+
+    const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "warn");
+    assert.match(verdict?.detail ?? "", /interrupted migration/);
+    assert.match(verdict?.detail ?? "", /no manual repair is needed/);
+    assert.equal(checked.ok, true, checked.blockers.join("\n"));
+
+    const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.equal(updated.applied, true);
+    const recoveredConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(Object.keys(recoveredConfig.agents ?? {}), [], "exactly one storage form");
+    assert.equal(recoveredConfig.theme, "tokyonight");
+    assert.equal(recoveredConfig.$schema, "https://opencode.ai/config.json");
+    const recoveredManifest = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8"));
+    for (const id of agentIds(legacy)) {
+      const file = projectAgentPath(fixture, id);
+      assert.ok(existsSync(file), `${id} Markdown`);
+      assert.equal(resolve(recoveredManifest.agents[id].path), resolve(file), `${id} path recorded`);
+      assert.equal(
+        recoveredManifest.agents[id].digest,
+        agentMarkdownDigest(readFileSync(file, "utf8")),
+        `${id} canonical digest`,
+      );
+    }
+    assert.ok(readFileSync(target, "utf8").includes(body), "the body survives recovery");
+    assert.equal(
+      updated.operations.filter(
+        (operation) => operation.kind === "migrate" && /interrupted migration/.test(operation.detail),
+      ).length,
+      agentIds(legacy).length,
+    );
+
+    const second = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(second.ok, true, second.blockers.join("\n"));
+    assert.equal(second.changed, false, "a second update is a no-op");
+    const rechecked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    for (const id of agentIds(legacy)) {
+      assert.equal(rechecked.checks.find((item) => item.id === `agent:${id}`)?.status, "ok", id);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a pathless record left after the config write is adopted without an inline entry", async () => {
+  const fixture = makeFixture();
+  try {
+    const legacy = materialize(fixture, "plugin", "project");
+    const configPath = projectConfigPath(fixture);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.theme = "tokyonight";
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    await crashAfterConfig(fixture);
+
+    const crashedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(Object.keys(crashedConfig.agents ?? {}), [], "the config write removed the inline entries");
+    assert.equal(crashedConfig.theme, "tokyonight", "unrelated config keys survive");
+    const crashedManifest = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8"));
+    for (const id of agentIds(legacy)) {
+      assert.ok(existsSync(projectAgentPath(fixture, id)), `${id} file survives the crash`);
+      assert.equal(crashedManifest.agents[id].path, undefined, `${id} record is still pathless`);
+    }
+
+    const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "warn");
+    assert.match(verdict?.detail ?? "", /entry is already absent/);
+    assert.equal(checked.ok, true, checked.blockers.join("\n"));
+
+    const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(configPath, "utf8")).agents ?? {}), []);
+    const target = projectAgentPath(fixture, "synthesis-agent");
+    const record = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8")).agents["synthesis-agent"];
+    assert.equal(resolve(record.path), resolve(target));
+    assert.equal(record.digest, agentMarkdownDigest(readFileSync(target, "utf8")));
+
+    const second = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(second.changed, false, "a second update is a no-op");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a crash recovery canonicalizes a CRLF-only file and never rewrites a canonical one", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    await crashAfterAgents(fixture);
+    const target = projectAgentPath(fixture, "synthesis-agent");
+    const canonical = readFileSync(target, "utf8");
+    writeFileSync(target, toCrlf(canonical), "utf8");
+
+    const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "warn");
+    assert.match(verdict?.detail ?? "", /rewrite only its line endings/);
+
+    const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.equal(readFileSync(target, "utf8"), canonical);
+    assert.doesNotMatch(readFileSync(target, "utf8"), /\r/);
+    assert.ok(
+      updated.operations.some((operation) => /line endings canonicalized/.test(operation.detail)),
+      updated.operations.map((operation) => operation.detail).join("\n"),
+    );
+    const record = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8")).agents["synthesis-agent"];
+    assert.equal(record.digest, agentMarkdownDigest(canonical));
+
+    const second = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(second.changed, false, "a second update is a no-op");
+    assert.equal(readFileSync(target, "utf8"), canonical);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a crash edit followed by uninstall leaves a retained record that update never recovers", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    await crashAfterAgents(fixture);
+    const configPath = projectConfigPath(fixture);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.agents["synthesis-agent"].system = "user edited after the crash";
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const target = projectAgentPath(fixture, "synthesis-agent");
+    const fileBefore = readFileSync(target, "utf8");
+
+    const removed = await runInstaller(request(fixture, "plugin", "project", "uninstall"));
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.ok(removed.retained.includes("agents.synthesis-agent"));
+    assert.ok(existsSync(target), "uninstall never deletes a file it did not own");
+    const retainedRecord = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8")).agents[
+      "synthesis-agent"
+    ];
+    assert.equal(retainedRecord.path, undefined);
+    assert.equal(retainedRecord.retained, true);
+    const configAfterUninstall = readFileSync(configPath, "utf8");
+
+    const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "error");
+    assert.match(verdict?.detail ?? "", /retained/);
+    assert.match(verdict?.detail ?? "", /never recovered automatically/);
+
+    const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(updated.ok, false);
+    assert.deepEqual(updated.blockers, [verdict?.detail], "one manual action for check and update");
+    assert.equal(readFileSync(configPath, "utf8"), configAfterUninstall);
+    assert.equal(readFileSync(target, "utf8"), fileBefore);
+    assert.equal(
+      JSON.parse(readFileSync(manifestPathFor(fixture), "utf8")).agents["synthesis-agent"].retained,
+      true,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a retained pathless record with no file reports one manual action", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    await crashAfterAgents(fixture);
+    const configPath = projectConfigPath(fixture);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.agents["synthesis-agent"].system = "user edited after the crash";
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const removed = await runInstaller(request(fixture, "plugin", "project", "uninstall"));
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    const target = projectAgentPath(fixture, "synthesis-agent");
+    assert.ok(existsSync(target), "the unowned file is left in place");
+    rmSync(target);
+    const configBefore = readFileSync(configPath, "utf8");
+
+    const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "error");
+    assert.match(verdict?.detail ?? "", /retained/);
+    assert.match(verdict?.detail ?? "", /never recovered automatically/);
+
+    const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(updated.ok, false);
+    assert.deepEqual(updated.blockers, [verdict?.detail], "one manual action for check and update");
+    assert.equal(readFileSync(configPath, "utf8"), configBefore);
+    assert.equal(existsSync(target), false);
+    assert.equal(
+      JSON.parse(readFileSync(manifestPathFor(fixture), "utf8")).agents["synthesis-agent"].retained,
+      true,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("uninstall reports a leftover Markdown file from a crashed pathless record", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    await crashAfterAgents(fixture);
+    const target = projectAgentPath(fixture, "synthesis-agent");
+
+    const removed = await runInstaller(request(fixture, "plugin", "project", "uninstall"));
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.ok(existsSync(target), "the file is left in place");
+    assert.ok(
+      removed.warnings.some((warning) => /left in place/.test(warning)),
+      removed.warnings.join("\n"),
+    );
+    assert.deepEqual(
+      Object.keys(JSON.parse(readFileSync(projectConfigPath(fixture), "utf8")).agents ?? {}),
+      [],
+      "the inline entry is removed",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a crash file modified after the crash blocks recovery before any write", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    await crashAfterAgents(fixture);
+    const configPath = projectConfigPath(fixture);
+    const target = projectAgentPath(fixture, "synthesis-agent");
+    writeFileSync(
+      target,
+      readFileSync(target, "utf8").replace(/^description: .*$/m, "description: local edit"),
+      "utf8",
+    );
+    const configBefore = readFileSync(configPath, "utf8");
+    const fileBefore = readFileSync(target, "utf8");
+    const manifestBefore = readFileSync(manifestPathFor(fixture), "utf8");
+
+    const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "error");
+    assert.match(verdict?.detail ?? "", /differs from the current source/);
+    assert.match(verdict?.detail ?? "", /Nothing was changed/);
+
+    const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(updated.ok, false);
+    assert.deepEqual(updated.blockers, [verdict?.detail]);
+    assert.equal(readFileSync(configPath, "utf8"), configBefore);
+    assert.equal(readFileSync(target, "utf8"), fileBefore);
+    assert.equal(readFileSync(manifestPathFor(fixture), "utf8"), manifestBefore);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a crash inline value modified after the crash blocks recovery before any write", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    await crashAfterAgents(fixture);
+    const configPath = projectConfigPath(fixture);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.agents["synthesis-agent"].description = "local inline edit";
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const configBefore = readFileSync(configPath, "utf8");
+    const target = projectAgentPath(fixture, "synthesis-agent");
+    const fileBefore = readFileSync(target, "utf8");
+    const manifestBefore = readFileSync(manifestPathFor(fixture), "utf8");
+
+    const checked = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const verdict = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(verdict?.status, "error");
+    assert.match(verdict?.detail ?? "", /inline agents\.synthesis-agent .* changed after installation/);
+
+    const updated = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(updated.ok, false);
+    assert.deepEqual(updated.blockers, [verdict?.detail]);
+    assert.equal(readFileSync(configPath, "utf8"), configBefore);
+    assert.equal(readFileSync(target, "utf8"), fileBefore);
+    assert.equal(readFileSync(manifestPathFor(fixture), "utf8"), manifestBefore);
   } finally {
     fixture.cleanup();
   }

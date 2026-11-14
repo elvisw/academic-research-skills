@@ -53,8 +53,10 @@ permissions, `provider/model#variant`, exact body) plus installer cases for new
 installs writing no `agents.<id>`, CRLF-normalized ownership
 (update/retention/removal), retained-record healing and restore, body and
 whitespace edits kept as user edits, unowned CRLF reuse and unowned-file
-collisions, stale pre-Markdown verdicts shared by `check` and `update`,
-dual-form refusal and rollback of written agent files.
+collisions, interrupted-migration recovery after the agent or config write
+(including retained/manual refusal, CRLF canonicalization and one verdict
+shared by `check` and `update`), the uninstall warning for a leftover crash
+file, and the dual-form refusal with rollback of written agent files.
 Environment isolation uses a
 temporary HOME/USERPROFILE/XDG config/data/cache/state plus `ProgramData`.
 `test:host:install` is pinned to OpenCode 2.2.7 and covers installation,

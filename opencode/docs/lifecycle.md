@@ -17,10 +17,21 @@ How to update, uninstall, switch channels and move an installation without losin
 - **Migrate a pre-Markdown inline install:** `update` writes one Markdown file
   per unchanged owned `agents.<id>`, then removes the inline values. It is
   all-or-nothing: a modified, retained or unowned differing entry blocks the
-  whole run before any write. `check` reports the legacy state first. When a
-  migration is blocked, restore the original inline value or remove the inline
-  entry and its ownership record manually; uninstall retains modified entries,
-  so it does not reset the record.
+  whole run before any write. `check` reports the legacy state first.
+- **Recover an interrupted migration:** a run that stops after the Markdown
+  file write but before the configuration and manifest writes is reconciled by
+  the next commands, without a journal. `check` warns when a pathless,
+  non-retained ownership record has a file whose CRLF-folded bytes equal the
+  current source and the inline entry is absent, unchanged or already the
+  desired value. `update` then removes any inline entry, records the file path
+  and canonical digest, and rewrites the file only to canonicalize line endings;
+  a canonical file is not rewritten and a second update is a no-op. A retained
+  record, a file that differs from the source, or an inline entry modified after
+  the crash is never recovered: `check` reports an error and `update` blocks
+  with the same manual action. A file or inline edit can be repaired by
+  restoring the original bytes/value; a retained record cannot be cleared by
+  restoring the inline value, so remove the inline entry and its ownership
+  record manually. Uninstall retains modified entries, so it is not a reset.
 - **Uninstall:** `node "C:/work/academic-research-skills/opencode/install.ts" uninstall --channel <plugin|skills> --scope project --project "C:/research/my-project" --apply`.
   Only unchanged owned entries are removed. Modified agent files, skills and
   instruction files survive with their ownership records; a modified instruction

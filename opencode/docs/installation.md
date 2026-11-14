@@ -124,21 +124,35 @@ The install is conservative:
   the owned bytes (including whitespace or blank-line changes the semantic
   comparison ignores) is a user edit: `check` warns that the bytes differ, and
   `update` and `uninstall` keep it.
-- A stale pre-Markdown ownership record (one with no Markdown `path`) is
-  reported as an `error` by `check` and refused by `update` with the same text;
-  neither writes. The repair text is conditional: if a Markdown file exists and
-  matches the source, removing the record lets a later update reuse it; if the
-  file differs, move it aside and restore the inline entry. `uninstall` removes
-  the record and warns that it never owned a file to delete.
+- The pre-Markdown crash window is reconciled, not journalled. A pathless,
+  non-retained ownership record is recoverable when the Markdown file exists,
+  its CRLF-folded bytes equal the current source, and the inline entry is absent,
+  unchanged from the record or already the desired value. `check` warns;
+  `update` removes the inline entry, records the file path and canonical digest,
+  and rewrites the file only when its bytes differ (CRLF-only line endings). A
+  canonical file is not rewritten, and a second update is a no-op.
+- The same pathless record is a manual error in every other state. With a file
+  that differs from the source, an inline value changed after installation, or a
+  retained record, `check` reports an error and `update` blocks before any write
+  with the same text; the file, inline value and record stay untouched. With no
+  file and no inline entry, the existing refusal remains: restore the inline
+  entry or remove the stale record. `uninstall` drops an unchanged pathless
+  record and warns either that no file was owned, or that the leftover Markdown
+  file at `agents/<id>.md` was left in place; a modified inline entry is
+  retained with its record.
 - `update` migrates an unchanged owned pre-Markdown `agents.<id>` record:
   it writes the Markdown file first, then removes the inline value. A modified,
   retained or unowned differing inline entry stops the whole migration before
   any write; no Markdown file is written for any agent in that run. `check`
-  reports the legacy state before and after migration. If migration is blocked,
-  restore the original inline value, or manually remove `agents.<id>` from the
-  configuration and its record from the ownership manifest named in the report;
-  `uninstall` retains modified entries, so uninstall/reinstall is not a reset.
-  This release never writes both forms for one ID.
+  reports the legacy state before and after migration. If the run is interrupted
+  between the file and the config/manifest write, the next `check` warns and the
+  next `update` completes the migration as described above. For a file-modified
+  or inline-modified state, restore the original file or inline value. For a
+  retained record, restoring the inline value does not clear the retained flag:
+  remove `agents.<id>` from the configuration and its record from the ownership
+  manifest named in the report; `uninstall` retains modified entries, so
+  uninstall/reinstall is not a reset. This release never writes both forms for
+  one ID.
 - A legacy fixed-root agent template is recognised but adopted only with
   `--adopt-legacy`; an install request alone does not take ownership.
 
