@@ -164,6 +164,7 @@ export type OperationKind =
   | "remove"
   | "keep"
   | "reuse"
+  | "migrate"
   | "adopt"
   | "retain"
   | "backup"
@@ -1356,6 +1357,44 @@ function foreignScopeInlineAgents(
   return found;
 }
 
+/** The other channel's manifest in the same scope, if it exists. */
+function otherChannelManifest(
+  paths: ScopePaths,
+  request: InstallRequest,
+  packageRoot: string,
+): { path: string; manifest: InstallManifest } | null {
+  const channel: Channel = request.channel === "plugin" ? "skills" : "plugin";
+  const path = join(
+    paths.stateRoot,
+    manifestKey({ ...request, channel }, paths.scope, paths.projectRoot, packageRoot),
+  );
+  if (!existsSync(path)) return null;
+  return { path, manifest: readManifestFile(path)! };
+}
+
+function otherChannelReviewerBlocker(
+  paths: ScopePaths,
+  request: InstallRequest,
+  packageRoot: string,
+): string | null {
+  try {
+    const other = otherChannelManifest(paths, request, packageRoot);
+    const entry = other?.manifest.agents[SKILLS_ONLY_AGENT];
+    // A retained entry is no longer an active ownership claim: the file itself
+    // still decides whether the other channel's definition can be reused, so a
+    // stale retained record cannot deadlock both channels.
+    if (!other || !entry || entry.retained) return null;
+    return (
+      `${request.channel} install/update is blocked: the ${other.manifest.channel} channel ` +
+      `already owns ${SKILLS_ONLY_AGENT} in this scope (${toPosix(other.path)}). ` +
+      `The shared file is ${entry.path ? toPosix(entry.path) : `agents.${SKILLS_ONLY_AGENT}`}. ` +
+      "Uninstall the other channel first, or keep one channel per scope."
+    );
+  } catch (error) {
+    return `the other channel's ownership manifest could not be read: ${(error as Error).message}`;
+  }
+}
+
 function planAgentEntries(plan: InstallPlan): void {
   const { paths, manifest, desiredAgents, state } = plan;
   const agentsNode = getPath(plan.currentConfig, ["agents"]);
@@ -1434,43 +1473,58 @@ function planInlineAgent(
   const { request, paths, packageRoot, projectRoot, state } = plan;
   const desiredValue = agentConfigValue(agent);
   const desiredDigest = digestValue(desiredValue);
+  const markdown = renderAgentMarkdown(agent);
+  const markdownDigest = agentMarkdownDigest(markdown);
+  const target = agentFilePath(paths.agentsDir, agent.id);
   if (owned?.retained) {
     // A previously retained user edit keeps its record on every retry; it is
     // not reclassified as an unowned collision.
-    plan.nextAgents[agent.id] = { digest: digestValue(current), retained: true };
-    state.retained.push(`agents.${agent.id}`);
-    state.operations.push({
-      kind: "retain",
-      target: `agents.${agent.id}`,
-      detail: "previously retained user edit; left untouched and still recorded",
-    });
+    state.blockers.push(
+      `agents.${agent.id} is a user-modified legacy inline entry; the whole migration ` +
+        "is stopped before any write. Restore the original inline value, or remove " +
+        `agents.${agent.id} from ${toPosix(paths.configPath)} and its ownership record from ` +
+        `${toPosix(paths.manifestPath)}; uninstall retains user-modified entries`,
+    );
     return;
   }
   if (owned) {
-    if (equivalentConfigValue(current, desiredValue)) {
-      plan.nextAgents[agent.id] = { digest: digestValue(current) };
-      state.operations.push({ kind: "keep", target: `agents.${agent.id}`, detail: "already current" });
-    } else if (digestValue(current) === owned.digest) {
-      state.configText = editConfigChecked(state.configText, paths.configPath, ["agents", agent.id], desiredValue);
-      state.configDirty = true;
-      plan.nextAgents[agent.id] = { digest: desiredDigest };
+    if (digestValue(current) !== owned.digest && !equivalentConfigValue(current, desiredValue)) {
+      state.blockers.push(
+        `agents.${agent.id} changed after installation; the whole migration is stopped ` +
+          "before any write. Restore the original inline value, or remove " +
+          `agents.${agent.id} from ${toPosix(paths.configPath)} and its ownership record from ` +
+          `${toPosix(paths.manifestPath)}; uninstall retains user-modified entries. ` +
+          "No Markdown file was written for any agent",
+      );
       state.operations.push({
-        kind: "update",
+        kind: "blocked",
         target: `agents.${agent.id}`,
-        detail: "owned entry updated to the current source",
+        detail: "user-modified legacy inline entry; migration refused",
       });
-    } else {
-      plan.nextAgents[agent.id] = { digest: digestValue(current), retained: true };
-      state.retained.push(`agents.${agent.id}`);
-      state.operations.push({
-        kind: "retain",
-        target: `agents.${agent.id}`,
-        detail: "user-modified after installation; left untouched and still recorded",
-      });
+      return;
     }
+    // Write the Markdown file first; config removal is applied after it.
+    state.agentWrites.push({ id: agent.id, target, content: markdown, before: null });
+    plan.nextAgents[agent.id] = { path: target, digest: markdownDigest };
+    state.configText = editConfigChecked(
+      state.configText,
+      paths.configPath,
+      ["agents", agent.id],
+      undefined,
+    );
+    state.configDirty = true;
+    state.operations.push({
+      kind: "migrate",
+      target: `agents.${agent.id}`,
+      detail: `migrated to ${toPosix(target)}`,
+    });
     return;
   }
   if (equivalentConfigValue(current, desiredValue)) {
+    state.warnings.push(
+      `agents.${agent.id} already exists inline with an identical definition; it is reused ` +
+        "without ownership and is not migrated, so the inline value remains in the configuration",
+    );
     state.operations.push({
       kind: "reuse",
       target: `agents.${agent.id}`,
@@ -2225,6 +2279,10 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
         "now resolves a different configuration. Restore the original environment or remove " +
         "the stale manifest explicitly; nothing was changed.",
     );
+  }
+  if (request.action !== "uninstall" && request.action !== "check") {
+    const conflict = otherChannelReviewerBlocker(paths, request, packageRoot);
+    if (conflict) blockers.push(conflict);
   }
 
   const currentConfig = parseConfig(configText, paths.configPath);
@@ -2986,6 +3044,8 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
   void configText;
   void input.operations;
   for (const problem of blockers) pushCheck(checks, "preflight", "error", problem);
+  const channelConflict = otherChannelReviewerBlocker(paths, request, packageRoot);
+  if (channelConflict) pushCheck(checks, "channel-conflict", "error", channelConflict);
   const major = Number(process.versions.node.split(".")[0]);
   pushCheck(
     checks,
@@ -3098,6 +3158,7 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
     const current = installedAgents[agent.id];
     const target = agentFilePath(paths.agentsDir, agent.id);
     const fileText = existsSync(target) ? readFileSync(target, "utf8") : null;
+    const owned = manifest?.agents[agent.id];
     const foreignPath = foreignInline.get(agent.id);
     if (foreignPath) {
       pushCheck(
@@ -3128,22 +3189,48 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
         permissions: (current as Record<string, unknown>).permissions as never,
         model: (current as Record<string, unknown>).model as never,
       });
-      pushCheck(
-        checks,
-        `agent:${agent.id}`,
-        differences.length ? "warn" : "ok",
-        differences.length
-          ? `inline agents.${agent.id} on disk with different ${differences.join(", ")}`
-          : `inline agents.${agent.id} on disk with the expected instructions, mode, permissions and model`,
-      );
+      if (owned && !owned.path) {
+        const changed =
+          owned.retained ||
+          (digestValue(current) !== owned.digest &&
+            !equivalentConfigValue(current, agentConfigValue(agent)));
+        pushCheck(
+          checks,
+          `agent:${agent.id}`,
+          changed ? "error" : "warn",
+          changed
+            ? `legacy inline agents.${agent.id} is user-modified; update will stop before migrating`
+            : `legacy inline agents.${agent.id} is unchanged; run update to migrate it to ${toPosix(target)}`,
+        );
+      } else if (!owned) {
+        pushCheck(
+          checks,
+          `agent:${agent.id}`,
+          differences.length ? "error" : "warn",
+          differences.length
+            ? `unowned legacy inline agents.${agent.id} differs from the source; update will refuse it`
+            : `unowned legacy inline agents.${agent.id} is identical and will not be claimed or migrated`,
+        );
+      } else {
+        pushCheck(
+          checks,
+          `agent:${agent.id}`,
+          differences.length ? "warn" : "ok",
+          differences.length
+            ? `inline agents.${agent.id} on disk with different ${differences.join(", ")}`
+            : `inline agents.${agent.id} on disk with the expected instructions, mode, permissions and model`,
+        );
+      }
       continue;
     }
     if (fileText === null) {
       pushCheck(
         checks,
         `agent:${agent.id}`,
-        "warn",
-        `not present: no Markdown file at ${toPosix(target)} and no agents.${agent.id} in ${toPosix(paths.configPath)}`,
+        owned && !owned.path ? "error" : "warn",
+        owned && !owned.path
+          ? `legacy ownership record for agents.${agent.id} has no inline entry; update will stop`
+          : `not present: no Markdown file at ${toPosix(target)} and no agents.${agent.id} in ${toPosix(paths.configPath)}`,
       );
       continue;
     }
@@ -3319,12 +3406,40 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
     pendingRemovals: [...manifest.pendingRemovals],
   };
 
+  let otherOwnsReviewer = false;
+  try {
+    const other = otherChannelManifest(paths, request, packageRoot);
+    otherOwnsReviewer = Boolean(other?.manifest.agents[SKILLS_ONLY_AGENT]);
+    if (otherOwnsReviewer && other) {
+      warnings.push(
+        `the ${other.manifest.channel} channel still owns ${SKILLS_ONLY_AGENT} ` +
+          `(${toPosix(other.path)}); this uninstall will keep the shared reviewer file`,
+      );
+    }
+  } catch (error) {
+    otherOwnsReviewer = true;
+    warnings.push(
+      `the other channel's manifest could not be read; retaining ${SKILLS_ONLY_AGENT}: ${(error as Error).message}`,
+    );
+  }
+
   const agents = getPath(config, ["agents"]);
   const agentRecord =
     agents && typeof agents === "object" && !Array.isArray(agents)
       ? (agents as Record<string, unknown>)
       : {};
   for (const [id, owned] of Object.entries(manifest.agents)) {
+    if (id === SKILLS_ONLY_AGENT && otherOwnsReviewer) {
+      // This uninstall ends our claim but must not delete a file the other
+      // channel owns. Drop our record so a later reinstall starts clean.
+      delete nextManifest.agents[id];
+      operations.push({
+        kind: "retain",
+        target: owned.path ? toPosix(owned.path) : `agents.${id}`,
+        detail: "the other channel still owns this reviewer; file left in place and our claim removed",
+      });
+      continue;
+    }
     if (owned.path) {
       if (!existsSync(owned.path)) {
         // Already gone: nothing to remove or retain.

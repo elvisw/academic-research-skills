@@ -205,8 +205,12 @@ node "C:/work/academic-research-skills/opencode/install.ts" uninstall --channel 
 node "C:/work/academic-research-skills/opencode/install.ts" update --channel skills --scope project --project "C:/research/my-project" --apply
 ```
 
-Only unchanged owned entries are removed; modified files are kept. Channel
-switching, relocation and retry behavior are in
+Only unchanged owned entries are removed; modified files are kept. If you
+installed an older inline `agents.<id>` version, `update` migrates unchanged
+owned entries to Markdown files; a modified or unowned differing entry stops
+the whole migration before any write. A second channel in the same scope is
+refused while the other channel owns `screening-reviewer-agent`; uninstall the
+first channel before switching. Relocation and retry behavior are in
 [Update, uninstall and relocation](docs/lifecycle.md).
 
 ## Troubleshooting

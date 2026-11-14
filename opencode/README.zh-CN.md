@@ -309,6 +309,8 @@ node "C:\work\academic-research-skills\opencode\install.ts" uninstall --channel 
 
 安装器只删除它自己创建、且没有被你改过的文件。你手工改过的内容会保留。
 
+如果你之前安装的是旧版内联 `agents.<id>`，`update` 会把未改过的自有条目迁移成 Markdown 文件；只要有一条被改过或属于内容不同的未拥有条目，整次迁移会在写入前停止，不会留下半迁移状态。同一 scope 下第二个渠道在另一个渠道仍拥有 `screening-reviewer-agent` 时会被拒绝，请先卸载原渠道再切换。
+
 ---
 
 ## 8. 常见问题

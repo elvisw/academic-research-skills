@@ -111,9 +111,15 @@ The install is conservative:
   the exact source system prompt. A differing unowned file is a collision; an
   identical unowned file is reused without ownership. One agent ID defined both
   as a file and inline is refused before any write.
-- A pre-Markdown inline `agents.<id>` record stays on its old branch: it is
-  refreshed in place and removed from the configuration on uninstall. This
-  release never rewrites it as a file, and never writes both forms for one ID.
+- `update` migrates an unchanged owned pre-Markdown `agents.<id>` record:
+  it writes the Markdown file first, then removes the inline value. A modified,
+  retained or unowned differing inline entry stops the whole migration before
+  any write; no Markdown file is written for any agent in that run. `check`
+  reports the legacy state before and after migration. If migration is blocked,
+  restore the original inline value, or manually remove `agents.<id>` from the
+  configuration and its record from the ownership manifest named in the report;
+  `uninstall` retains modified entries, so uninstall/reinstall is not a reset.
+  This release never writes both forms for one ID.
 - A legacy fixed-root agent template is recognised but adopted only with
   `--adopt-legacy`; an install request alone does not take ownership.
 

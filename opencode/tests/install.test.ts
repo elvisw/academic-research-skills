@@ -832,13 +832,15 @@ test("a failed skill removal is recorded and retried", async () => {
   }
 });
 
-test("preview reports an existing opposite-channel installation without deleting it", async () => {
+test("preview refuses a second channel without deleting the first installation", async () => {
   const fixture = makeFixture();
   try {
     const skills = await install(fixture, "skills", "project", { apply: true });
     assert.equal(skills.ok, true);
     const preview = await install(fixture, "plugin", "project");
-    assert.ok(preview.warnings.some((warning) => /native skill copies also exist/.test(warning)));
+    assert.equal(preview.ok, false);
+    assert.match(preview.warnings.join("\n"), /native skill copies also exist/);
+    assert.match(preview.blockers.join("\n"), /already owns screening-reviewer-agent/);
     assert.equal(existsSync(join(fixture.project, ".opencode", "skills", "deep-research", "SKILL.md")), true);
 
     const clean = makeFixture();
@@ -846,9 +848,9 @@ test("preview reports an existing opposite-channel installation without deleting
       const plugin = await install(clean, "plugin", "project", { apply: true });
       assert.equal(plugin.ok, true);
       const skillsPreview = await install(clean, "skills", "project");
-      assert.ok(
-        skillsPreview.warnings.some((warning) => /plugin entry for this checkout also exists/.test(warning)),
-      );
+      assert.equal(skillsPreview.ok, false);
+      assert.match(skillsPreview.warnings.join("\n"), /plugin entry for this checkout also exists/);
+      assert.match(skillsPreview.blockers.join("\n"), /already owns screening-reviewer-agent/);
     } finally {
       clean.cleanup();
     }
