@@ -65,6 +65,7 @@ import {
 import {
   agentFilePath,
   agentMarkdownDigest,
+  agentMarkdownOwnershipDigest,
   renderAgentMarkdown,
 } from "./agent-storage.ts";
 import { discoverInterpreter } from "./script-runner.ts";
@@ -1558,9 +1559,91 @@ function planInlineAgent(
 }
 
 /**
- * Markdown ownership branch. The file digest, not the config value, decides:
- * equal means this installer may refresh it, different means the user edited
- * it and it is retained forever.
+ * How one Markdown agent file relates to this installer's ownership record.
+ * The planner, `check` and `uninstall` share this classification so the three
+ * commands agree on what "unchanged" means.
+ */
+type MarkdownOwnershipStatus =
+  | "missing" // no file and no ownership record
+  | "unowned" // a file exists, but this installer has no record for it
+  | "stale" // a pre-Markdown record with no `path`
+  | "absent" // an owned file was deleted by the user
+  | "retained" // a previously retained user edit
+  | "owned" // the CRLF-folded file bytes match the owned digest
+  | "modified"; // the CRLF-folded file bytes differ from the owned digest
+
+interface MarkdownOwnership {
+  status: MarkdownOwnershipStatus;
+  /** Digest of the file bytes exactly as found on disk. */
+  rawDigest: string | null;
+  /** Digest after folding CRLF to LF; the ownership comparison. */
+  ownershipDigest: string | null;
+}
+
+function classifyMarkdownOwnership(
+  owned: InstallManifestEntry | undefined,
+  fileText: string | null,
+): MarkdownOwnership {
+  const rawDigest = fileText === null ? null : agentMarkdownDigest(fileText);
+  const ownershipDigest =
+    fileText === null ? null : agentMarkdownOwnershipDigest(fileText);
+  if (!owned) {
+    return {
+      status: fileText === null ? "missing" : "unowned",
+      rawDigest,
+      ownershipDigest,
+    };
+  }
+  if (!owned.path) return { status: "stale", rawDigest, ownershipDigest };
+  if (owned.retained) return { status: "retained", rawDigest, ownershipDigest };
+  if (fileText === null) return { status: "absent", rawDigest, ownershipDigest };
+  return {
+    status: ownershipDigest === owned.digest ? "owned" : "modified",
+    rawDigest,
+    ownershipDigest,
+  };
+}
+
+/**
+ * One stale-record verdict for `check` and `update`. A pre-Markdown record has
+ * a digest but no `path`, so it cannot prove which file it owns. Both commands
+ * report this same text and write nothing; story 2.2 replaces the refusal with
+ * interrupted-migration recovery.
+ */
+function staleMarkdownRecordMessage(
+  agentId: string,
+  paths: ScopePaths,
+  target: string,
+  filePresent: boolean,
+  fileMatchesSource: boolean,
+): string {
+  const fileState = filePresent
+    ? `the Markdown file ${toPosix(target)} exists, but this record cannot prove ` +
+      "that this installer wrote it"
+    : `no Markdown file exists at ${toPosix(target)} either`;
+  const repair = !filePresent
+    ? `restore the inline entry in ${toPosix(paths.configPath)}, or remove the ` +
+      `stale ownership record from ${toPosix(paths.manifestPath)}`
+    : fileMatchesSource
+      ? `the file matches the source, so removing the stale ownership record from ` +
+        `${toPosix(paths.manifestPath)} lets this release reuse it as unowned; you can ` +
+        `also move the Markdown file aside and restore the inline entry in ` +
+        `${toPosix(paths.configPath)}`
+      : "the file does not match the source, so move the Markdown file aside and " +
+        `restore the inline entry in ${toPosix(paths.configPath)}; removing the record ` +
+        "would leave a file this release must not reuse";
+  return (
+    `agents.${agentId} has a pre-Markdown ownership record, but no inline entry ` +
+    `exists in ${toPosix(paths.configPath)}. ${fileState}. This release does not ` +
+    `migrate that record to Markdown or repair an interrupted migration ` +
+    `automatically; ${repair}. Nothing was changed`
+  );
+}
+
+/**
+ * Markdown ownership branch. The CRLF-folded digest decides whether this
+ * installer may refresh the file; the semantic comparison decides whether a
+ * retained record can be healed because the file matches the source again.
  */
 function planMarkdownAgent(
   plan: InstallPlan,
@@ -1575,17 +1658,18 @@ function planMarkdownAgent(
 ): void {
   const { paths, state } = plan;
   const { target, content, desiredDigest, owned, fileText } = input;
-  const currentDigest = fileText === null ? null : agentMarkdownDigest(fileText);
+  const ownership = classifyMarkdownOwnership(owned, fileText);
+  const matchesSource =
+    fileText !== null && markdownAgentDifferences(agent, fileText).length === 0;
   const label = `agents.${agent.id}`;
 
-  if (owned && !owned.path) {
-    // The ownership record still points at an inline value, but that value is
-    // gone. Converting it here would turn a stale record into a Markdown claim
-    // without a migration decision; story 1.2 owns that transition.
+  if (ownership.status === "stale") {
+    // A crash between the agent-file write and the manifest write can leave
+    // this state. Converting it here would turn a stale record into a Markdown
+    // claim without a migration decision; story 2.2 owns that transition, so
+    // `check` and `update` report the same refusal and write nothing.
     state.blockers.push(
-      `agents.${agent.id} has a pre-Markdown ownership record, but no inline entry ` +
-        `exists in ${toPosix(paths.configPath)}. This release does not migrate that ` +
-        "record to Markdown; restore the inline entry or remove the stale ownership record",
+      staleMarkdownRecordMessage(agent.id, paths, target, fileText !== null, matchesSource),
     );
     state.operations.push({
       kind: "blocked",
@@ -1596,15 +1680,41 @@ function planMarkdownAgent(
   }
 
   if (owned?.retained) {
-    if (fileText === null || currentDigest === null) {
+    if (fileText === null || ownership.rawDigest === null) {
+      // The retained edit is gone. Restoring the source is the only state the
+      // installer can prove safe: the user's version no longer exists, so the
+      // record is cleared and the file recreated rather than silently dropped.
+      state.agentWrites.push({ id: agent.id, target, content, before: null });
+      plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
       state.operations.push({
-        kind: "keep",
+        kind: "update",
         target: toPosix(target),
-        detail: "previously retained Markdown agent was removed by the user; ownership record dropped",
+        detail:
+          "previously retained Markdown agent was removed by the user; restored from source and retained flag cleared",
       });
       return;
     }
-    plan.nextAgents[agent.id] = { path: target, digest: currentDigest, retained: true };
+    if (matchesSource) {
+      // The user's edit now matches the source again; the record no longer
+      // needs to pin their digest, and the file is healed to canonical bytes.
+      if (fileText !== content) {
+        state.agentWrites.push({ id: agent.id, target, content, before: fileText });
+      }
+      plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
+      state.operations.push({
+        kind: fileText === content ? "keep" : "update",
+        target: toPosix(target),
+        detail:
+          "previously retained user edit now matches the source; retained flag cleared" +
+          (fileText === content ? "" : " and the file canonicalized"),
+      });
+      return;
+    }
+    plan.nextAgents[agent.id] = {
+      path: target,
+      digest: ownership.rawDigest,
+      retained: true,
+    };
     state.retained.push(label);
     state.operations.push({
       kind: "retain",
@@ -1615,7 +1725,7 @@ function planMarkdownAgent(
   }
 
   if (owned) {
-    if (fileText === null || currentDigest === null) {
+    if (fileText === null || ownership.rawDigest === null) {
       state.agentWrites.push({ id: agent.id, target, content, before: null });
       plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
       state.operations.push({
@@ -1623,8 +1733,13 @@ function planMarkdownAgent(
         target: toPosix(target),
         detail: "owned Markdown agent was missing; rewritten from source",
       });
-    } else if (currentDigest === owned.digest) {
-      if (currentDigest === desiredDigest) {
+    } else if (ownership.status === "owned") {
+      // The file is still the installer's: it matches the owned text while the
+      // source moved on (source change), or it only differs in line endings
+      // (CRLF). Both are refreshed to the canonical bytes the installer
+      // writes. Any other byte difference is a user edit; a semantic
+      // comparison must not turn whitespace into a silent overwrite.
+      if (fileText === content) {
         plan.nextAgents[agent.id] = { path: target, digest: desiredDigest };
         state.operations.push({
           kind: "keep",
@@ -1641,7 +1756,11 @@ function planMarkdownAgent(
         });
       }
     } else {
-      plan.nextAgents[agent.id] = { path: target, digest: currentDigest, retained: true };
+      plan.nextAgents[agent.id] = {
+        path: target,
+        digest: ownership.rawDigest,
+        retained: true,
+      };
       state.retained.push(label);
       state.operations.push({
         kind: "retain",
@@ -1652,8 +1771,8 @@ function planMarkdownAgent(
     return;
   }
 
-  if (currentDigest !== null && fileText !== null) {
-    if (currentDigest === desiredDigest) {
+  if (fileText !== null) {
+    if (matchesSource) {
       state.operations.push({
         kind: "reuse",
         target: toPosix(target),
@@ -3223,18 +3342,48 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
       }
       continue;
     }
+    const ownership = classifyMarkdownOwnership(owned, fileText);
+    const differences =
+      fileText === null ? [] : markdownAgentDifferences(agent, fileText);
+    if (ownership.status === "stale") {
+      // Same verdict and text as `update`: a pathless record cannot prove it
+      // owns this file, so it never reaches the content comparison below.
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "error",
+        staleMarkdownRecordMessage(
+          agent.id,
+          paths,
+          target,
+          fileText !== null,
+          fileText !== null && differences.length === 0,
+        ),
+      );
+      continue;
+    }
     if (fileText === null) {
       pushCheck(
         checks,
         `agent:${agent.id}`,
-        owned && !owned.path ? "error" : "warn",
-        owned && !owned.path
-          ? `legacy ownership record for agents.${agent.id} has no inline entry; update will stop`
-          : `not present: no Markdown file at ${toPosix(target)} and no agents.${agent.id} in ${toPosix(paths.configPath)}`,
+        "warn",
+        `not present: no Markdown file at ${toPosix(target)} and no agents.${agent.id} in ${toPosix(paths.configPath)}`,
       );
       continue;
     }
-    const differences = markdownAgentDifferences(agent, fileText);
+    if (ownership.status === "modified" && differences.length === 0) {
+      // The text is semantically the same but these are not the bytes the
+      // installer wrote (for example, trailing whitespace or blank lines).
+      // `update` and `uninstall` keep the file as a user edit, so `check` must
+      // not report `ok`.
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "warn",
+        `Markdown file ${toPosix(target)} matches the source semantically, but its bytes differ from the installed file; update and uninstall will keep it as a user edit`,
+      );
+      continue;
+    }
     pushCheck(
       checks,
       `agent:${agent.id}`,
@@ -3447,8 +3596,12 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
         continue;
       }
       const currentText = readFileSync(owned.path, "utf8");
+      const ownership = classifyMarkdownOwnership(owned, currentText);
+      // The CRLF-folded ownership digest decides whether the file is still the
+      // one the installer wrote; `retained` stays authoritative, so a retained
+      // record is never removed by the shared classifier's "owned" status.
       const currentDigest = agentMarkdownDigest(currentText);
-      if (!owned.retained && currentDigest === owned.digest) {
+      if (!owned.retained && ownership.status === "owned") {
         state.agentRemoves.push({ id, target: owned.path, expectedDigest: currentDigest });
         state.backupTargets.push(owned.path);
         delete nextManifest.agents[id];
@@ -3470,6 +3623,22 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
     }
     const current = agentRecord[id];
     if (current === undefined) {
+      if (!owned.path) {
+        // A stale pre-Markdown record has no Markdown path, so this command
+        // never owned a file it could delete. Say so instead of dropping the
+        // record silently.
+        warnings.push(
+          `agents.${id} has a stale pre-Markdown ownership record but no inline entry; ` +
+            "only the record is removed and no Markdown path can be deleted. " +
+            `Restore the inline entry or remove the file at ${toPosix(agentFilePath(paths.agentsDir, id))} manually`,
+        );
+        operations.push({
+          kind: "keep",
+          target: `agents.${id}`,
+          detail:
+            "stale pre-Markdown ownership record dropped; no Markdown path was owned, so no file was removed",
+        });
+      }
       delete nextManifest.agents[id];
       continue;
     }

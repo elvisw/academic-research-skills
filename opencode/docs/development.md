@@ -50,8 +50,11 @@ only with `--adopt-legacy`, malformed-config abort, lock contention, rollback
 after a failed write, and read-only checks. Markdown agents are covered by
 `tests/agent-storage.test.ts` (frontmatter golden, YAML quoting, ordered
 permissions, `provider/model#variant`, exact body) plus installer cases for new
-installs writing no `agents.<id>`, digest-based update/retention/removal,
-unowned-file collisions, dual-form refusal and rollback of written agent files.
+installs writing no `agents.<id>`, CRLF-normalized ownership
+(update/retention/removal), retained-record healing and restore, body and
+whitespace edits kept as user edits, unowned CRLF reuse and unowned-file
+collisions, stale pre-Markdown verdicts shared by `check` and `update`,
+dual-form refusal and rollback of written agent files.
 Environment isolation uses a
 temporary HOME/USERPROFILE/XDG config/data/cache/state plus `ProgramData`.
 `test:host:install` is pinned to OpenCode 2.2.7 and covers installation,

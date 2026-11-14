@@ -22,6 +22,16 @@ export function agentMarkdownDigest(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+/**
+ * Ownership digest for a Markdown agent file on disk: CRLF line endings are
+ * folded to LF before hashing, so a file that only gained Windows line endings
+ * still matches the digest the installer wrote. The installer always writes
+ * the canonical LF form, so this digest equals `agentMarkdownDigest` for it.
+ */
+export function agentMarkdownOwnershipDigest(content: string): string {
+  return agentMarkdownDigest(content.replace(/\r\n/g, "\n"));
+}
+
 /** YAML plain scalars that a reader would otherwise coerce or misparse. */
 const RESERVED_SCALARS = new Set([
   "true",

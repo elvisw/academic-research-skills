@@ -92,10 +92,13 @@ The install is conservative:
   state location on that filesystem **before the initial install**. Keep the same
   state location for later lifecycle commands.
 - An installer lock and a pre-write re-read abort on concurrent edits.
-- Ownership is digest-based. A second apply is a no-op; a user-modified entry is
-  retained and reported, never overwritten. Uninstall removes only unchanged
-  owned entries and keeps modified instruction files together with their
-  `instructions` reference.
+- Ownership is digest-based on the canonical bytes the installer writes. For
+  Markdown agents the comparison folds CRLF to LF before hashing, so a file
+  saved with Windows line endings keeps its ownership. A second apply is a
+  no-op; a user-modified entry is retained and reported, never overwritten.
+  Uninstall removes only unchanged owned entries (including an owned file that
+  differs only in line endings) and keeps modified instruction files together
+  with their `instructions` reference.
 - Skill updates are directory units. A modified bundle is kept whole rather
   than mixing old templates with new prose. Retired owned assets are removed
   only when unchanged; failed removals stay recorded for retry.
@@ -104,13 +107,29 @@ The install is conservative:
   retain the bundle. Review/remove unwanted generated caches yourself before
   retrying an update; the installer never silently discards them.
 - Identical pre-existing assets are reused without claiming ownership. A
-  differing unowned asset is a collision and blocks the run.
+  differing unowned asset is a collision and blocks the run, except that an
+  unowned Markdown agent matching the source is reused as described below.
 - Native agents are Markdown files, so a new install writes no `agents.<id>`
   values. Frontmatter carries the description, `mode: subagent`, the optional
   `model: provider/model#variant` and the ordered permission list; the body is
-  the exact source system prompt. A differing unowned file is a collision; an
-  identical unowned file is reused without ownership. One agent ID defined both
-  as a file and inline is refused before any write.
+  the exact source system prompt. An unowned Markdown file that matches the
+  source (including a copy that differs only in CRLF line endings) is reused
+  without ownership; one that differs semantically is a collision. One agent ID
+  defined both as a file and inline is refused before any write.
+- An owned Markdown file that only gained CRLF line endings is `ok` to `check`;
+  `update` rewrites the canonical LF bytes and records the canonical digest, and
+  `uninstall` removes it. A retained file is healed when its content matches the
+  source again: `update` clears `retained` and canonicalizes it, and a retained
+  file the user deleted is restored from the source. A file that differs from
+  the owned bytes (including whitespace or blank-line changes the semantic
+  comparison ignores) is a user edit: `check` warns that the bytes differ, and
+  `update` and `uninstall` keep it.
+- A stale pre-Markdown ownership record (one with no Markdown `path`) is
+  reported as an `error` by `check` and refused by `update` with the same text;
+  neither writes. The repair text is conditional: if a Markdown file exists and
+  matches the source, removing the record lets a later update reuse it; if the
+  file differs, move it aside and restore the inline entry. `uninstall` removes
+  the record and warns that it never owned a file to delete.
 - `update` migrates an unchanged owned pre-Markdown `agents.<id>` record:
   it writes the Markdown file first, then removes the inline value. A modified,
   retained or unowned differing inline entry stops the whole migration before
