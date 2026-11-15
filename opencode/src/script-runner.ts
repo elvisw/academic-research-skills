@@ -58,6 +58,29 @@ export function isolatedPythonEnv(options: {
   return env;
 }
 
+/**
+ * OpenCode 2.3.x runs plugins on Bun on Windows. Bun's child_process resolves
+ * the App Execution Alias stubs under `WindowsApps`; `py`/`python` there either
+ * report "no runtime installed" or start the Store installer and never close.
+ * Strip that directory from the child PATH so the real Python installation is
+ * used. Node is unaffected and keeps the user's PATH unchanged.
+ */
+export function childEnvironment(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+  bun: boolean = typeof (globalThis as { Bun?: unknown }).Bun === "object",
+): NodeJS.ProcessEnv {
+  if (platform !== "win32" || !bun) return env;
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path");
+  if (!pathKey) return env;
+  const filtered = String(env[pathKey] ?? "")
+    .split(";")
+    .filter((entry) => entry.trim() && !/\\WindowsApps(?:\\|$)/i.test(entry.trim()))
+    .join(";");
+  if (filtered === env[pathKey]) return env;
+  return { ...env, [pathKey]: filtered, PATH: filtered };
+}
+
 export function spawnBounded(options: {
   command: string;
   args: string[];
@@ -82,7 +105,7 @@ export function spawnBounded(options: {
     try {
       child = spawn(options.command, options.args, {
         cwd: options.cwd,
-        env: options.env,
+        env: childEnvironment(options.env),
         shell: false,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
@@ -105,6 +128,10 @@ export function spawnBounded(options: {
       } catch {
         /* already gone */
       }
+      // A Windows App Execution Alias (or a wrapper process) can keep the
+      // stdio pipes open after the direct child is killed, so `close` may
+      // never fire. Resolve on the timeout instead of hanging the caller.
+      finish({ code: null, stdout, stderr, timedOut: true });
     }, options.timeoutMs);
 
     child.stdout?.setEncoding("utf8");

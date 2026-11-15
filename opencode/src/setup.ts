@@ -1,11 +1,11 @@
 /**
  * Installation planning and read-only verification.
  *
- * OpenCode V2 has no "add agent" API: native subagents come from configuration
- * (`agents.<id>` with `system`, `mode`, `permissions`). This module builds the
- * preview fragment for those agents and checks an installation without writing
- * anything. The user merges the fragment by hand; a collision is refused, never
- * overwritten.
+ * OpenCode V2 has no "add agent" API: native subagents come from either
+ * configuration (`agents.<id>`) or Markdown files under `agents/<id>.md`. This
+ * module builds the preview for either shape and checks an installation without
+ * writing anything. The installer writes Markdown; a collision is refused,
+ * never overwritten.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -96,8 +96,10 @@ export interface InstallationCheck {
 export interface SetupReport {
   checks: InstallationCheck[];
   agents: NativeAgentSpec[];
+  /** Manual/status fragment; not printed by `formatSetupReport`. */
   fragment: Record<string, unknown>;
-  fragmentText: string;
+  /** Exact read-only diagnostic's suggested installer command. */
+  installCommand: string;
   ok: boolean;
 }
 
@@ -496,8 +498,8 @@ export async function planInstallation(options: {
         "agent",
         options.strictAgents ? "error" : "warn",
         pluginRegistered
-          ? `agent ${agent.id} is not loaded in this host snapshot yet; run ars_opencode_status to verify the merged fragment`
-          : `agent ${agent.id} is not installed yet; merge the preview fragment after registration`,
+          ? `agent ${agent.id} is not loaded in this host snapshot yet; run ars_opencode_status to inspect the host`
+          : `agent ${agent.id} is not installed yet; run the opencode installer for this scope, then reload`,
       );
       continue;
     }
@@ -506,7 +508,7 @@ export async function planInstallation(options: {
       push(
         "agent-collision",
         "error",
-        `agent ${agent.id} is installed with different ${differences.join(", ")}; refusing to overwrite. Rename it or merge the fragment manually.`,
+        `agent ${agent.id} is installed with different ${differences.join(", ")}; refusing to overwrite. Rename it or reconcile that agent definition with the installer.`,
       );
     } else {
       push(
@@ -634,7 +636,7 @@ export async function planInstallation(options: {
     push(
       "registration",
       "warn",
-      `no config under ${toPosix(projectRoot)} or the global config lists ${toPosix(packagePath)}; install it with the preview fragment`,
+      `no config under ${toPosix(projectRoot)} or the global config lists ${toPosix(packagePath)}; run the opencode installer for this scope`,
     );
   }
 
@@ -673,11 +675,18 @@ export async function planInstallation(options: {
     ),
   };
 
+  const modelOptions: Record<string, unknown> = {};
+  if (adapter.models?.agents) modelOptions.agents = adapter.models.agents;
+  if (adapter.models?.aliases) modelOptions.aliases = adapter.models.aliases;
+  if (adapter.screening?.roles) modelOptions.screening = { roles: adapter.screening.roles };
+  const modelsArgument = Object.keys(modelOptions).length
+    ? ` --models '${JSON.stringify(modelOptions)}'`
+    : "";
   return {
     checks,
     agents,
     fragment,
-    fragmentText: `${JSON.stringify(fragment, null, 2)}\n`,
+    installCommand: `node "${toPosix(join(packageRoot, "opencode", "install.ts"))}" install --channel plugin --scope project --project "${toPosix(projectRoot)}"${modelsArgument} --apply`,
     ok: checks.every((check) => check.status !== "error"),
   };
 }
@@ -687,7 +696,13 @@ export function formatSetupReport(report: SetupReport): string {
   for (const check of report.checks) {
     lines.push(`[${check.status}] ${check.id}: ${check.detail}`);
   }
-  lines.push("", "Preview fragment (merge manually; never overwritten):", "");
-  lines.push(report.fragmentText.trimEnd());
+  lines.push(
+    "",
+    "This check is read-only. Install or update the Markdown agents with:",
+    "",
+    `  ${report.installCommand}`,
+    "",
+    "Use --scope global for a global install. The separate ars_opencode_status tool still returns per-agent fragments for manual inspection.",
+  );
   return lines.join("\n");
 }

@@ -9,19 +9,21 @@ runtime.
 
 Tested baseline (only this combination was exercised):
 
-- Windows, OpenCode `v2.2.7`
+- Windows, OpenCode `v2.3.0` for the Markdown agent path
 - `@opencode/plugin` `2.2.7`
-- Node.js 24 (the plugin and tests run TypeScript directly)
+- Node.js 24+ (the plugin and tests run TypeScript directly); the 2.3.0 agent
+  gate ran under Node `26.13.1`, while the 2.2.7 baseline used Node `24.21.0`
 
 Other operating systems and other OpenCode/plugin versions are untested. The
 adapter refuses to register when a required host-contract member is missing
 instead of guessing.
 
-**Status.** Tested on Windows 11 + OpenCode 2.2.7 + Node 24. A real `/ars-full`
-run completed Stage 1–6 and all 16 public commands were invoked (15 stopped at
-their first checkpoint); one native subagent dispatch probe succeeded. Full
-multi-agent orchestration, PDF export, Windows durable ledger, and Claude/Pi
-runtime regression remain unverified. See
+**Status.** Markdown agent installation and loading were tested on Windows 11 +
+OpenCode 2.3.0 (test process Node `26.13.1`). The earlier `/ars-full` run completed Stage 1–6 on the
+2.2.7 baseline and all 16 public commands were invoked (15 stopped at their
+first checkpoint); one native subagent dispatch probe succeeded. Markdown agent
+loading on 2.2.7 is unverified. Full multi-agent orchestration, PDF export,
+Windows durable ledger, and Claude/Pi runtime regression remain unverified. See
 [Development and verification](docs/development.md) for the evidence and limits.
 
 ## Quick install (from zero)
@@ -33,7 +35,7 @@ PowerShell from the ARS checkout and replace the two example paths.
 
    ```powershell
    node --version       # must be 24+
-   opencode --version   # tested with 2.2.7; 2.3.0 is newer and untested
+   opencode --version   # use 2.3.0 for the Markdown agent path
    py -3 --version
    py -3 -c "import yaml; print(yaml.__version__)"
    ```
@@ -204,8 +206,12 @@ node "C:/work/academic-research-skills/opencode/install.ts" uninstall --channel 
 node "C:/work/academic-research-skills/opencode/install.ts" update --channel skills --scope project --project "C:/research/my-project" --apply
 ```
 
-Only unchanged owned entries are removed; modified files are kept. Channel
-switching, relocation and retry behavior are in
+Only unchanged owned entries are removed; modified files are kept. If you
+installed an older inline `agents.<id>` version, `update` migrates unchanged
+owned entries to Markdown files; a modified or unowned differing entry stops
+the whole migration before any write. A second channel in the same scope is
+refused while the other channel owns `screening-reviewer-agent`; uninstall the
+first channel before switching. Relocation and retry behavior are in
 [Update, uninstall and relocation](docs/lifecycle.md).
 
 ## Troubleshooting
@@ -223,8 +229,9 @@ switching, relocation and retry behavior are in
 
 ## Limits
 
-- Only **Windows 11 + OpenCode 2.2.7 + Node 24** is validated; macOS/Linux are
-  untested.
+- **Windows 11** is validated: the 2.2.7 baseline (Node `24.21.0`) covered
+  registration, commands and the earlier full run; Markdown agents were tested
+  on OpenCode 2.3.0 under a Node `26.13.1` test process. macOS/Linux are untested.
 - Full multi-agent orchestration, PDF export, Windows durable ledger, and
   Claude/Pi runtime regression remain unverified and are recorded as limits.
 - The `skills` channel has no `/ars-*` commands, plugin tools or write guard.

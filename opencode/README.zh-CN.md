@@ -20,7 +20,7 @@
 ### 必需
 
 - **Windows 11**（目前只在 Windows 上实测过）
-- **OpenCode 2.2.7**（适配器按这个版本验证；更高版本未验证）
+- **OpenCode 2.3.0**（Markdown agent 路径按这个版本验证；2.2.7 的历史全流程验收仍然有效，但 2.2.7 的 Markdown 加载未验证）
 - **Node.js 24 或更高**
 - **完整的 ARS 仓库**，不能只复制 `opencode/` 一个目录
 - **Python 3**（写入保护和部分 CLI 命令需要）
@@ -43,7 +43,7 @@ py -3 -c "import yaml; print(yaml.__version__)"
 py -3 -m pip install pyyaml
 ```
 
-> 如果 `opencode --version` 显示 2.3.0 或更高，而安装后无法加载，请先回退到 2.2.7 再试。本文只对 2.2.7 负责。
+> 插件渠道安装的四个 agent 以 Markdown 文件写入；skills 渠道只写 `screening-reviewer-agent.md`。这套路径只在 OpenCode 2.3.0 上验证过。若你在 2.2.7 上发现 agent 没有加载，请升级到 2.3.0 后再试。
 
 ---
 
@@ -309,6 +309,8 @@ node "C:\work\academic-research-skills\opencode\install.ts" uninstall --channel 
 
 安装器只删除它自己创建、且没有被你改过的文件。你手工改过的内容会保留。
 
+如果你之前安装的是旧版内联 `agents.<id>`，`update` 会把未改过的自有条目迁移成 Markdown 文件；只要有一条被改过或属于内容不同的未拥有条目，整次迁移会在写入前停止，不会留下半迁移状态。同一 scope 下第二个渠道在另一个渠道仍拥有 `screening-reviewer-agent` 时会被拒绝，请先卸载原渠道再切换。
+
 ---
 
 ## 8. 常见问题
@@ -342,7 +344,7 @@ C:\research\ars-models.json
 
 ## 9. 目前的限制
 
-- 只在 **Windows 11 + OpenCode 2.2.7 + Node 24** 上验证；macOS/Linux 未验证。
+- 只在 **Windows 11** 上验证：2.2.7 基线（Node 24.21.0）覆盖注册、命令和此前的全流程运行，Markdown agent 在 OpenCode 2.3.0 上用 Node 26.13.1 的测试进程验证；macOS/Linux 未验证。
 - 完整多代理编排、PDF 导出、Windows durable ledger、Claude/Pi 运行时回归仍未验证；这些是已记录的限制，不是“已经支持”。
 - `--channel skills` 没有 `/ars-*` 命令、插件工具和写入保护。
 

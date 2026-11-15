@@ -6,6 +6,7 @@ import fs, {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -17,6 +18,7 @@ import test from "node:test";
 import { parse } from "jsonc-parser";
 import {
   InstallError,
+  digestValue,
   formatInstallReport,
   parseModelsArgument,
   runInstaller,
@@ -26,6 +28,7 @@ import {
   type InstallRequest,
   type Scope,
 } from "../src/install.ts";
+import { agentMarkdownDigest, renderAgentMarkdown } from "../src/agent-storage.ts";
 import { legacyAgentSystem, loadNativeAgents } from "../src/setup.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -127,6 +130,124 @@ async function install(
   );
 }
 
+function agentsDir(fixture: Fixture, scope: Scope = "project"): string {
+  return scope === "global"
+    ? join(fixture.home, ".config", "opencode", "agents")
+    : join(fixture.project, ".opencode", "agents");
+}
+
+function agentFileNames(fixture: Fixture, scope: Scope = "project"): string[] {
+  const dir = agentsDir(fixture, scope);
+  return existsSync(dir) ? readdirSync(dir).sort() : [];
+}
+
+/** The `model:` frontmatter line of one rendered agent, if any. */
+function agentModelLine(
+  fixture: Fixture,
+  id: string,
+  scope: Scope = "project",
+): string | undefined {
+  const text = readFileSync(join(agentsDir(fixture, scope), `${id}.md`), "utf8");
+  return /^model: (.+)$/m.exec(text)?.[1];
+}
+
+/** Windows line endings for an installed Markdown file, without other edits. */
+function withCrlf(text: string): string {
+  return text.replace(/\r?\n/g, "\r\n");
+}
+
+interface OwnedAgentRecord {
+  digest: string;
+  path?: string;
+  retained?: boolean;
+}
+
+function manifestAgents(manifestPath: string): Record<string, OwnedAgentRecord> {
+  return (JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    agents: Record<string, OwnedAgentRecord>;
+  }).agents;
+}
+
+function writeManifestAgents(
+  manifestPath: string,
+  agents: Record<string, OwnedAgentRecord>,
+): void {
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    agents: Record<string, OwnedAgentRecord>;
+  };
+  manifest.agents = agents;
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+function agentRecord(manifestPath: string, id: string): OwnedAgentRecord {
+  const record = manifestAgents(manifestPath)[id];
+  assert.ok(record, `ownership record for ${id}`);
+  return record;
+}
+
+/** Drop `path` from one record, reproducing the interrupted-migration shape. */
+function stripAgentPath(manifestPath: string, id: string): void {
+  const agents = manifestAgents(manifestPath);
+  agents[id] = { digest: agentRecord(manifestPath, id).digest };
+  writeManifestAgents(manifestPath, agents);
+}
+
+/**
+ * Turn a fresh plugin install into the pre-Markdown shape: inline agents in
+ * `config.agents`, matching manifest digests, no Markdown files. Story 1.2 has
+ * to migrate exactly this state, so the legacy inline branch stays covered.
+ */
+async function seedLegacyInline(fixture: Fixture): Promise<InstallReport> {
+  const report = await install(fixture, "plugin", "project", { apply: true });
+  assert.equal(report.ok, true, report.blockers.join("\n"));
+  rmSync(agentsDir(fixture), { recursive: true, force: true });
+  const config = readJsonc(projectConfig(fixture));
+  const manifest = JSON.parse(readFileSync(report.manifestPath, "utf8")) as {
+    agents: Record<string, { digest: string }>;
+  };
+  const { agents } = loadNativeAgents(fixture.packageRoot, {}, [], {
+    validateModels: false,
+  });
+  const inline: Record<string, unknown> = {};
+  for (const agent of agents) {
+    const value = {
+      description: agent.description,
+      mode: agent.mode,
+      system: agent.system,
+      ...(agent.model ? { model: agent.model } : {}),
+      permissions: agent.permissions,
+    };
+    inline[agent.id] = value;
+    manifest.agents[agent.id] = { digest: digestValue(value) };
+  }
+  config.agents = inline;
+  writeFileSync(projectConfig(fixture), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  writeFileSync(report.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  return report;
+}
+
+test("a stale pre-Markdown ownership record is not converted into a Markdown claim", async () => {
+  const fixture = makeFixture();
+  try {
+    await seedLegacyInline(fixture);
+    const config = readJsonc(projectConfig(fixture));
+    delete config.agents;
+    writeFileSync(projectConfig(fixture), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const report = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(report.ok, false);
+    assert.match(report.blockers.join("\n"), /pre-Markdown ownership record/);
+    assert.match(report.blockers.join("\n"), /no inline entry exists/);
+    assert.match(report.blockers.join("\n"), /Restore the inline entry/);
+    assert.deepEqual(agentFileNames(fixture), []);
+    assert.equal(readJsonc(projectConfig(fixture)).agents, undefined);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("Windows case-only project spelling keeps one lifecycle identity", async () => {
   const fixture = makeFixture();
   try {
@@ -137,7 +258,8 @@ test("Windows case-only project spelling keeps one lifecycle identity", async ()
     assert.equal(updated.manifestPath, first.manifestPath);
     const removed = await runInstaller(request(fixture, { action: "uninstall", channel: "plugin", projectRoot: alternate, apply: true }));
     assert.equal(removed.ok, true);
-    assert.equal(Object.keys(readJsonc(projectConfig(fixture)).agents as object).length, 0);
+    assert.equal(readJsonc(projectConfig(fixture)).agents, undefined);
+    assert.deepEqual(agentFileNames(fixture), []);
   } finally { fixture.cleanup(); }
 });
 
@@ -305,21 +427,21 @@ test("plugin preview writes nothing; apply writes once and a second apply change
     assert.equal(existsSync(projectConfig(fixture)), false);
     assert.equal(existsSync(preview.manifestPath), false);
     assert.equal(existsSync(join(fixture.project, ".opencode", "skills")), false);
+    assert.equal(existsSync(agentsDir(fixture)), false);
 
     const first = await install(fixture, "plugin", "project", { apply: true });
     assert.equal(first.ok, true, first.blockers.join("\n"));
     assert.equal(first.applied, true);
     const config = readJsonc(projectConfig(fixture));
     assert.equal((config.plugins as unknown[]).length, 1);
-    assert.deepEqual(
-      Object.keys(config.agents as Record<string, unknown>).sort(),
-      [
-        "report-compiler-agent",
-        "research-architect-agent",
-        "screening-reviewer-agent",
-        "synthesis-agent",
-      ],
-    );
+    assert.equal(config.agents, undefined, "new installs write Markdown, not agents.<id>");
+    assert.deepEqual(agentFileNames(fixture), [
+      "report-compiler-agent.md",
+      "research-architect-agent.md",
+      "screening-reviewer-agent.md",
+      "synthesis-agent.md",
+    ]);
+    assert.equal(first.agentsDir.replace(/\\/g, "/"), agentsDir(fixture).replace(/\\/g, "/"));
     assert.equal(existsSync(first.manifestPath), true);
     assert.equal(
       existsSync(join(fixture.project, ".opencode", "skills")),
@@ -359,7 +481,13 @@ test("global JSONC keeps comments, Unicode and unrelated secrets; backups stay o
     assert.match(text, /user-instructions\.md/);
     const config = readJsonc(path);
     assert.equal((config.plugins as unknown[]).length, 1);
-    assert.equal(Object.keys(config.agents as Record<string, unknown>).length, 4);
+    assert.equal(config.agents, undefined);
+    assert.deepEqual(agentFileNames(fixture, "global"), [
+      "report-compiler-agent.md",
+      "research-architect-agent.md",
+      "screening-reviewer-agent.md",
+      "synthesis-agent.md",
+    ]);
 
     assert.ok(report.backupDir);
     assert.ok(
@@ -379,7 +507,9 @@ test("global JSONC keeps comments, Unicode and unrelated secrets; backups stay o
       projectRoot: other,
     });
     assert.equal(otherReport.changed, false);
-    const agentsText = JSON.stringify(readJsonc(path).agents);
+    const agentsText = agentFileNames(fixture, "global")
+      .map((name) => readFileSync(join(agentsDir(fixture, "global"), name), "utf8"))
+      .join("\n");
     assert.equal(agentsText.includes(fixture.project.replace(/\\/g, "/")), false);
     assert.equal(agentsText.includes(other.replace(/\\/g, "/")), false);
     assert.match(agentsText, /project-portable/);
@@ -410,9 +540,8 @@ test("skills project copies five complete trees, one reviewer and routing instru
 
     const config = readJsonc(projectConfig(fixture));
     assert.equal(config.plugins, undefined, "skills channel installs no plugin");
-    assert.deepEqual(Object.keys(config.agents as Record<string, unknown>), [
-      "screening-reviewer-agent",
-    ]);
+    assert.equal(config.agents, undefined, "the reviewer is a Markdown file");
+    assert.deepEqual(agentFileNames(fixture), ["screening-reviewer-agent.md"]);
     assert.deepEqual(config.instructions, [".opencode/ars-instructions.md"]);
 
     const instructions = readFileSync(
@@ -448,9 +577,8 @@ test("global skills has a compatibility note but no implicit plugin startup rout
     assert.ok(existsSync(join(skillsDir, "deep-research", "SKILL.md")));
     const config = readJsonc(globalConfig(fixture));
     assert.equal(config.plugins, undefined);
-    assert.deepEqual(Object.keys(config.agents as Record<string, unknown>), [
-      "screening-reviewer-agent",
-    ]);
+    assert.equal(config.agents, undefined);
+    assert.deepEqual(agentFileNames(fixture, "global"), ["screening-reviewer-agent.md"]);
     const instructionEntry = (config.instructions as string[])[0] ?? "";
     assert.ok(existsSync(instructionEntry));
     const text = readFileSync(instructionEntry, "utf8");
@@ -571,24 +699,21 @@ test("plugin uninstall removes only unchanged owned entries and deletes the mani
     assert.equal(uninstall.ok, true, uninstall.blockers.join("\n"));
     const config = readJsonc(projectConfig(fixture));
     assert.equal((config.plugins as unknown[] | undefined)?.length ?? 0, 0);
-    assert.equal(Object.keys((config.agents as Record<string, unknown>) ?? {}).length, 0);
+    assert.equal(config.agents, undefined);
+    assert.deepEqual(agentFileNames(fixture), [], "unchanged Markdown agents are removed");
     assert.equal(existsSync(first.manifestPath), false);
 
-    // A user-edited agent entry is retained, not removed.
+    // A user-edited Markdown agent is retained, not removed.
     const second = await install(fixture, "plugin", "project", { apply: true });
-    assert.equal(second.ok, true);
-    const path = projectConfig(fixture);
-    const configAfter = readJsonc(path);
-    const agents = configAfter.agents as Record<string, Record<string, unknown>>;
-    agents["synthesis-agent"]!.system = "my own edits";
-    writeFileSync(path, JSON.stringify(configAfter, null, 2) + "\n", "utf8");
+    assert.equal(second.ok, true, second.blockers.join("\n"));
+    const edited = join(agentsDir(fixture), "synthesis-agent.md");
+    writeFileSync(edited, `${readFileSync(edited, "utf8")}\nmy own edits\n`, "utf8");
     const partial = await runInstaller(
       request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
     );
-    assert.equal(partial.ok, true);
-    const left = readJsonc(path);
-    assert.ok((left.agents as Record<string, unknown>)["synthesis-agent"]);
-    assert.equal((left.agents as Record<string, unknown>)["report-compiler-agent"], undefined);
+    assert.equal(partial.ok, true, partial.blockers.join("\n"));
+    assert.match(readFileSync(edited, "utf8"), /my own edits/);
+    assert.deepEqual(agentFileNames(fixture), ["synthesis-agent.md"]);
     assert.equal(existsSync(second.manifestPath), true);
     assert.ok(partial.retained.includes("agents.synthesis-agent"));
   } finally {
@@ -711,9 +836,17 @@ test("a failed skill removal is recorded and retried", async () => {
     assert.ok(failed.warnings.some((warning) => /could not remove/.test(warning)));
     assert.ok(existsSync(join(fixture.project, ".opencode", "skills", "deep-research", "SKILL.md")));
     const kept = readJsonc(projectConfig(fixture));
-    assert.deepEqual(Object.keys(kept.agents as Record<string, unknown>), [
-      "screening-reviewer-agent",
-    ]);
+    assert.equal(kept.agents, undefined);
+    assert.deepEqual(agentFileNames(fixture), ["screening-reviewer-agent.md"]);
+    assert.equal(
+      failed.operations.some(
+        (operation) =>
+          operation.kind === "remove" &&
+          operation.target.endsWith("screening-reviewer-agent.md"),
+      ),
+      false,
+      "a skipped agent removal must not be reported as removed",
+    );
     assert.deepEqual(kept.instructions, [".opencode/ars-instructions.md"]);
     const manifest = JSON.parse(readFileSync(first.manifestPath, "utf8")) as {
       pendingRemovals: string[];
@@ -741,13 +874,15 @@ test("a failed skill removal is recorded and retried", async () => {
   }
 });
 
-test("preview reports an existing opposite-channel installation without deleting it", async () => {
+test("preview refuses a second channel without deleting the first installation", async () => {
   const fixture = makeFixture();
   try {
     const skills = await install(fixture, "skills", "project", { apply: true });
     assert.equal(skills.ok, true);
     const preview = await install(fixture, "plugin", "project");
-    assert.ok(preview.warnings.some((warning) => /native skill copies also exist/.test(warning)));
+    assert.equal(preview.ok, false);
+    assert.match(preview.warnings.join("\n"), /native skill copies also exist/);
+    assert.match(preview.blockers.join("\n"), /already owns screening-reviewer-agent/);
     assert.equal(existsSync(join(fixture.project, ".opencode", "skills", "deep-research", "SKILL.md")), true);
 
     const clean = makeFixture();
@@ -755,9 +890,9 @@ test("preview reports an existing opposite-channel installation without deleting
       const plugin = await install(clean, "plugin", "project", { apply: true });
       assert.equal(plugin.ok, true);
       const skillsPreview = await install(clean, "skills", "project");
-      assert.ok(
-        skillsPreview.warnings.some((warning) => /plugin entry for this checkout also exists/.test(warning)),
-      );
+      assert.equal(skillsPreview.ok, false);
+      assert.match(skillsPreview.warnings.join("\n"), /plugin entry for this checkout also exists/);
+      assert.match(skillsPreview.blockers.join("\n"), /already owns screening-reviewer-agent/);
     } finally {
       clean.cleanup();
     }
@@ -833,12 +968,8 @@ test("model mappings are plugin-only and are written into the plugin options", a
       (options.screening as Record<string, unknown>).roles,
       { FTA: { providerID: "p", model: "m3" } },
     );
-    const agents = config.agents as Record<string, Record<string, unknown>>;
-    assert.deepEqual(agents["synthesis-agent"]!.model, {
-      providerID: "p",
-      model: "m2",
-      variant: "high",
-    });
+    assert.equal(config.agents, undefined, "the variant lives in the Markdown frontmatter");
+    assert.equal(agentModelLine(fixture, "synthesis-agent"), "p/m2#high");
   } finally {
     fixture.cleanup();
   }
@@ -885,11 +1016,8 @@ test("V01 persisted model mappings survive update and check without --models", a
       ((entry.options as Record<string, unknown>).screening as Record<string, unknown>).roles,
       screeningRoles,
     );
-    const agents = config.agents as Record<string, Record<string, unknown>>;
-    assert.deepEqual(agents["synthesis-agent"]!.model, {
-      providerID: "probe",
-      model: "agent-choice",
-    });
+    assert.equal(config.agents, undefined);
+    assert.equal(agentModelLine(fixture, "synthesis-agent"), "probe/agent-choice");
     const check = await runInstaller(
       request(fixture, { action: "check", channel: "plugin", scope: "project" }),
     );
@@ -972,11 +1100,14 @@ test("V02 a retained agent stays retained across repeated updates", async () => 
   try {
     const first = await install(fixture, "plugin", "project", { apply: true });
     assert.equal(first.ok, true);
-    const path = projectConfig(fixture);
-    const config = readJsonc(path);
-    (config.agents as Record<string, Record<string, unknown>>)["synthesis-agent"]!.description =
-      "user-edited-description";
-    writeFileSync(path, JSON.stringify(config, null, 2) + "\n", "utf8");
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const original = readFileSync(target, "utf8");
+    const userText = original.replace(
+      /^description: .*$/m,
+      "description: user-edited-description",
+    );
+    assert.notEqual(userText, original);
+    writeFileSync(target, userText, "utf8");
     const once = await runInstaller(
       request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
     );
@@ -987,11 +1118,7 @@ test("V02 a retained agent stays retained across repeated updates", async () => 
     );
     assert.equal(twice.ok, true, twice.blockers.join("\n"));
     assert.ok(twice.retained.includes("agents.synthesis-agent"));
-    const after = readJsonc(path);
-    assert.equal(
-      (after.agents as Record<string, Record<string, unknown>>)["synthesis-agent"]!.description,
-      "user-edited-description",
-    );
+    assert.equal(readFileSync(target, "utf8"), userText);
   } finally {
     fixture.cleanup();
   }
@@ -1499,6 +1626,1059 @@ test("a retired bundle changed during backup is not removed", async () => {
   } finally {
     fs.copyFileSync = originalCopy;
     syncBuiltinESMExports();
+    fixture.cleanup();
+  }
+});
+
+test("an unowned Markdown agent with different content blocks the whole install", async () => {
+  const fixture = makeFixture();
+  try {
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const mine = "---\ndescription: my own agent\nmode: subagent\n---\n\nmine\n";
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, mine, "utf8");
+    const report = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(report.ok, false);
+    assert.match(report.blockers.join("\n"), /already exists with different content outside this installer/);
+    assert.match(report.blockers.join("\n"), /synthesis-agent\.md/);
+    assert.equal(readFileSync(target, "utf8"), mine);
+    assert.equal(existsSync(projectConfig(fixture)), false, "blocked install writes no configuration");
+    assert.deepEqual(agentFileNames(fixture), ["synthesis-agent.md"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an identical unowned Markdown agent is reused without claiming ownership", async () => {
+  const fixture = makeFixture();
+  try {
+    const synthesis = loadNativeAgents(fixture.packageRoot, {}, [], {
+      validateModels: false,
+    }).agents.find((agent) => agent.id === "synthesis-agent");
+    assert.ok(synthesis);
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, renderAgentMarkdown(synthesis), "utf8");
+
+    const report = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(report.ok, true, report.blockers.join("\n"));
+    const manifest = JSON.parse(readFileSync(report.manifestPath, "utf8")) as {
+      agents: Record<string, unknown>;
+    };
+    assert.equal(manifest.agents["synthesis-agent"], undefined, "reused file is not claimed");
+    assert.deepEqual(agentFileNames(fixture), [
+      "report-compiler-agent.md",
+      "research-architect-agent.md",
+      "screening-reviewer-agent.md",
+      "synthesis-agent.md",
+    ]);
+
+    const uninstall = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(uninstall.ok, true, uninstall.blockers.join("\n"));
+    assert.ok(existsSync(target), "an unowned reusable file survives uninstall");
+    assert.deepEqual(agentFileNames(fixture), ["synthesis-agent.md"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("Markdown and inline definitions of one agent are refused before any write", async () => {
+  const fixture = makeFixture();
+  try {
+    await install(fixture, "plugin", "project", { apply: true });
+    const config = readJsonc(projectConfig(fixture));
+    config.agents = {
+      "synthesis-agent": {
+        description: "second definition",
+        mode: "subagent",
+        system: "second definition",
+        permissions: [],
+      },
+    };
+    const configText = `${JSON.stringify(config, null, 2)}\n`;
+    writeFileSync(projectConfig(fixture), configText, "utf8");
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const before = readFileSync(target, "utf8");
+
+    const report = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(report.ok, false);
+    const blockers = report.blockers.join("\n");
+    assert.match(blockers, /exists twice/);
+    assert.match(blockers, /synthesis-agent\.md/);
+    assert.match(blockers, /agents\.synthesis-agent/);
+    assert.equal(readFileSync(target, "utf8"), before);
+    assert.equal(readFileSync(projectConfig(fixture), "utf8"), configText);
+
+    const check = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const entry = check.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(entry?.status, "error");
+    assert.match(entry?.detail ?? "", /defined twice/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an inline definition in the other scope is refused before a Markdown write", async () => {
+  const fixture = makeFixture();
+  try {
+    const globalPath = globalConfig(fixture);
+    mkdirSync(dirname(globalPath), { recursive: true });
+    writeFileSync(
+      globalPath,
+      `${JSON.stringify({
+        agents: {
+          "synthesis-agent": {
+            description: "global inline",
+            mode: "subagent",
+            system: "global inline",
+            permissions: [],
+          },
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const project = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(project.ok, false);
+    assert.match(project.blockers.join("\n"), /global scope/);
+    assert.deepEqual(agentFileNames(fixture), []);
+    assert.equal(existsSync(projectConfig(fixture)), false);
+    const check = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const conflict = check.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(conflict?.status, "error");
+    assert.match(conflict?.detail ?? "", /global scope/);
+
+    const projectPath = projectConfig(fixture);
+    writeFileSync(
+      projectPath,
+      `${JSON.stringify({
+        agents: {
+          "synthesis-agent": {
+            description: "project inline",
+            mode: "subagent",
+            system: "project inline",
+            permissions: [],
+          },
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const global = await install(fixture, "plugin", "global", { apply: true });
+    assert.equal(global.ok, false);
+    const globalMessage = global.blockers.join("\n");
+    assert.match(globalMessage, /project scope/);
+    assert.equal(
+      globalMessage.includes(fixture.project.replace(/\\/g, "/")),
+      true,
+      "global blocker names the current project",
+    );
+    const globalCheck = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "global" }),
+    );
+    const globalEntry = globalCheck.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(globalEntry?.status, "error");
+    assert.equal(
+      (globalEntry?.detail ?? "").includes(fixture.project.replace(/\\/g, "/")),
+      true,
+      "global check names the current project",
+    );
+    assert.deepEqual(agentFileNames(fixture, "global"), []);
+    assert.match(readFileSync(projectPath, "utf8"), /project inline/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a CLI-style request finds the other scope through the process XDG root", async () => {
+  const fixture = makeFixture();
+  const originalXdg = process.env.XDG_CONFIG_HOME;
+  const originalState = process.env.ARS_OPENCODE_STATE_DIR;
+  try {
+    const xdg = join(fixture.home, "cli-xdg");
+    process.env.XDG_CONFIG_HOME = xdg;
+    process.env.ARS_OPENCODE_STATE_DIR = join(fixture.home, ".ars-state");
+    const globalPath = join(xdg, "opencode", "opencode.json");
+    mkdirSync(dirname(globalPath), { recursive: true });
+    writeFileSync(
+      globalPath,
+      `${JSON.stringify({
+        agents: {
+          "synthesis-agent": {
+            description: "global inline through XDG",
+            mode: "subagent",
+            system: "global inline through XDG",
+            permissions: [],
+          },
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const report = await runInstaller({
+      action: "install",
+      channel: "plugin",
+      scope: "project",
+      projectRoot: fixture.project,
+      packageRoot: fixture.packageRoot,
+      home: fixture.home,
+      apply: true,
+    });
+    assert.equal(report.ok, false);
+    assert.match(report.blockers.join("\n"), /global scope/);
+    assert.deepEqual(agentFileNames(fixture), []);
+  } finally {
+    if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = originalXdg;
+    if (originalState === undefined) delete process.env.ARS_OPENCODE_STATE_DIR;
+    else process.env.ARS_OPENCODE_STATE_DIR = originalState;
+    fixture.cleanup();
+  }
+});
+
+test("a source change rewrites an owned Markdown agent and advances its digest", async () => {
+  const fixture = makeFixture({ packageRootCopy: true });
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const manifest = JSON.parse(readFileSync(first.manifestPath, "utf8"));
+    assert.equal(resolve(manifest.agents["synthesis-agent"].path), resolve(target));
+    const before = readFileSync(target, "utf8");
+
+    const source = join(fixture.packageRoot, "agents", "synthesis_agent.md");
+    writeFileSync(source, `${readFileSync(source, "utf8")}\n<!-- source update -->\n`, "utf8");
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.equal(updated.retained.includes("agents.synthesis-agent"), false);
+    const after = readFileSync(target, "utf8");
+    assert.notEqual(after, before);
+    assert.match(after, /<!-- source update -->/);
+    const nextManifest = JSON.parse(readFileSync(first.manifestPath, "utf8"));
+    assert.notEqual(nextManifest.agents["synthesis-agent"].digest, manifest.agents["synthesis-agent"].digest);
+
+    const second = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(second.changed, false, "a second update is a no-op");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a failed configuration write rolls back the Markdown agents written by the same run", async () => {
+  const fixture = makeFixture();
+  try {
+    const report = await install(fixture, "plugin", "project", {
+      apply: true,
+      testHooks: { failAt: "config" },
+    });
+    assert.equal(report.ok, false);
+    assert.equal(report.applied, false);
+    assert.deepEqual(agentFileNames(fixture), []);
+    assert.equal(existsSync(projectConfig(fixture)), false);
+    assert.equal(existsSync(report.manifestPath), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a failed agent write rolls back the skills and instructions written before it", async () => {
+  const fixture = makeFixture();
+  try {
+    const report = await install(fixture, "skills", "project", {
+      apply: true,
+      testHooks: { failAt: "agents" },
+    });
+    assert.equal(report.ok, false);
+    assert.equal(report.applied, false);
+    assert.deepEqual(agentFileNames(fixture), []);
+    for (const name of [
+      "academic-paper",
+      "academic-paper-reviewer",
+      "academic-pipeline",
+      "deep-research",
+      "sr-screener",
+    ]) {
+      assert.equal(existsSync(join(fixture.project, ".opencode", "skills", name)), false, name);
+    }
+    assert.equal(
+      existsSync(join(fixture.project, ".opencode", "ars-instructions.md")),
+      false,
+    );
+    assert.equal(existsSync(projectConfig(fixture)), false);
+    assert.equal(existsSync(report.manifestPath), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("check names each Markdown agent path and reports missing or edited files", async () => {
+  const fixture = makeFixture();
+  try {
+    await install(fixture, "plugin", "project", { apply: true });
+    const ok = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const present = ok.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(present?.status, "ok");
+    assert.match(present?.detail ?? "", /synthesis-agent\.md/);
+    assert.equal(ok.agentsDir.replace(/\\/g, "/"), agentsDir(fixture).replace(/\\/g, "/"));
+
+    rmSync(join(agentsDir(fixture), "synthesis-agent.md"));
+    const missing = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const absent = missing.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(absent?.status, "warn");
+    assert.match(absent?.detail ?? "", /not present/);
+
+    const edited = join(agentsDir(fixture), "report-compiler-agent.md");
+    writeFileSync(edited, readFileSync(edited, "utf8").replace(/^mode: .*$/m, "mode: primary"), "utf8");
+    const changed = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const differs = changed.checks.find((item) => item.id === "agent:report-compiler-agent");
+    assert.equal(differs?.status, "warn");
+    assert.match(differs?.detail ?? "", /differs in frontmatter/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a stale pathless record with a matching file warns and is adopted by update", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const before = readFileSync(target, "utf8");
+    stripAgentPath(first.manifestPath, "synthesis-agent");
+    const configBefore = readFileSync(projectConfig(fixture), "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "warn");
+    assert.equal(checked.ok, true, checked.blockers.join("\n"));
+    const verdict = check?.detail ?? "";
+    assert.match(verdict, /interrupted migration/);
+    assert.match(verdict, /synthesis-agent\.md/);
+    assert.match(verdict, /entry is already absent/);
+    assert.match(verdict, /no manual repair is needed/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.equal(updated.applied, true);
+    assert.equal(readFileSync(target, "utf8"), before, "a canonical file is not rewritten");
+    assert.equal(
+      updated.operations.some((operation) => /line endings canonicalized/.test(operation.detail)),
+      false,
+      "the recovery does not schedule a rewrite for canonical bytes",
+    );
+    assert.equal(readFileSync(projectConfig(fixture), "utf8"), configBefore);
+    const record = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(resolve(record.path!), resolve(target));
+    assert.equal(record.digest, agentMarkdownDigest(before));
+
+    const second = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(second.changed, false, "a second update is a no-op");
+    const rechecked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    assert.equal(
+      rechecked.checks.find((item) => item.id === "agent:synthesis-agent")?.status,
+      "ok",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a stale pathless record whose file differs from the source errors and is not adopted", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    writeFileSync(
+      target,
+      readFileSync(target, "utf8").replace(/^description: .*$/m, "description: local"),
+      "utf8",
+    );
+    stripAgentPath(first.manifestPath, "synthesis-agent");
+    const manifestBefore = readFileSync(first.manifestPath, "utf8");
+    const configBefore = readFileSync(projectConfig(fixture), "utf8");
+    const fileBefore = readFileSync(target, "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "error");
+    const verdict = check?.detail ?? "";
+    assert.match(verdict, /differs from the current source/);
+    assert.match(verdict, /Nothing was changed/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, false);
+    assert.deepEqual(updated.blockers, [verdict], "check and update share one manual action");
+    assert.equal(readFileSync(target, "utf8"), fileBefore);
+    assert.equal(readFileSync(first.manifestPath, "utf8"), manifestBefore);
+    assert.equal(readFileSync(projectConfig(fixture), "utf8"), configBefore);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a pathless record with file and inline is recoverable instead of a dual-form error", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const before = readFileSync(target, "utf8");
+    stripAgentPath(first.manifestPath, "synthesis-agent");
+    const { agents } = loadNativeAgents(fixture.packageRoot, {}, [], {
+      validateModels: false,
+    });
+    const source = agents.find((agent) => agent.id === "synthesis-agent");
+    assert.ok(source);
+    const config = readJsonc(projectConfig(fixture));
+    config.agents = {
+      ...((config.agents as Record<string, unknown> | undefined) ?? {}),
+      "synthesis-agent": {
+        description: source.description,
+        mode: source.mode,
+        system: source.system,
+        ...(source.model ? { model: source.model } : {}),
+        permissions: source.permissions,
+      },
+    };
+    writeFileSync(projectConfig(fixture), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "warn", "the crash state is recovery, not two definitions");
+    assert.match(check?.detail ?? "", /interrupted migration/);
+    assert.match(check?.detail ?? "", /entry already matches the current source/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    const after = readJsonc(projectConfig(fixture));
+    assert.equal((after.agents as Record<string, unknown> | undefined)?.["synthesis-agent"], undefined);
+    assert.equal(readFileSync(target, "utf8"), before);
+    const record = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(resolve(record.path!), resolve(target));
+    assert.equal(record.digest, agentMarkdownDigest(before));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a stale pathless record without a file reports the same verdict and writes nothing", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    rmSync(target);
+    stripAgentPath(first.manifestPath, "synthesis-agent");
+    const manifestBefore = readFileSync(first.manifestPath, "utf8");
+    const configBefore = readFileSync(projectConfig(fixture), "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "error");
+    assert.equal(checked.ok, false);
+    const verdict = check?.detail ?? "";
+    assert.match(verdict, /no inline entry exists/);
+    assert.match(verdict, /no Markdown file exists/);
+    assert.match(verdict, /--discard-crashed-agent synthesis-agent/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, false);
+    assert.deepEqual(updated.blockers, [verdict]);
+    assert.equal(existsSync(target), false);
+    assert.equal(readFileSync(first.manifestPath, "utf8"), manifestBefore);
+    assert.equal(readFileSync(projectConfig(fixture), "utf8"), configBefore);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a discard recreates a missing pathless file from the current source", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    rmSync(target);
+    stripAgentPath(first.manifestPath, "synthesis-agent");
+
+    const updated = await runInstaller({
+      ...request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+      discardCrashedAgents: ["synthesis-agent"],
+    });
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.ok(existsSync(target));
+    const after = JSON.parse(readFileSync(first.manifestPath, "utf8")).agents["synthesis-agent"];
+    assert.ok(after.path);
+    assert.equal(after.digest, agentMarkdownDigest(readFileSync(target, "utf8")));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an owned Markdown file deleted by the user is recreated by update", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const canonical = readFileSync(target, "utf8");
+    rmSync(target);
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "warn");
+    assert.match(check?.detail ?? "", /not present/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.equal(readFileSync(target, "utf8"), canonical);
+    const record = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(record.retained, undefined);
+    assert.equal(record.digest, agentMarkdownDigest(canonical));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an owned CRLF file is ok to check, canonicalized by update and removed by uninstall", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const canonical = readFileSync(target, "utf8");
+    writeFileSync(target, withCrlf(canonical), "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    assert.equal(
+      checked.checks.find((item) => item.id === "agent:synthesis-agent")?.status,
+      "ok",
+    );
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.equal(updated.retained.includes("agents.synthesis-agent"), false);
+    assert.equal(readFileSync(target, "utf8"), canonical);
+    assert.equal(
+      agentRecord(first.manifestPath, "synthesis-agent").digest,
+      agentMarkdownDigest(canonical),
+    );
+
+    const again = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(again.ok, true, again.blockers.join("\n"));
+    assert.equal(again.changed, false, "a second update is a no-op");
+    const rechecked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    assert.equal(
+      rechecked.checks.find((item) => item.id === "agent:synthesis-agent")?.status,
+      "ok",
+      "a later check remains ok after canonicalization",
+    );
+
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.equal(existsSync(target), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a retained record is healed when the file matches the source again", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const canonical = readFileSync(target, "utf8");
+    writeFileSync(
+      target,
+      canonical.replace(/^description: .*$/m, "description: user-edited-description"),
+      "utf8",
+    );
+    const retained = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(retained.ok, true, retained.blockers.join("\n"));
+    assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
+
+    // Back to the source text, but saved with Windows line endings.
+    writeFileSync(target, withCrlf(canonical), "utf8");
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    assert.equal(
+      checked.checks.find((item) => item.id === "agent:synthesis-agent")?.status,
+      "ok",
+    );
+
+    const healed = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(healed.ok, true, healed.blockers.join("\n"));
+    assert.equal(healed.retained.includes("agents.synthesis-agent"), false);
+    assert.equal(readFileSync(target, "utf8"), canonical);
+    const record = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(record.retained, undefined);
+    assert.equal(record.digest, agentMarkdownDigest(canonical));
+    const rechecked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    assert.equal(
+      rechecked.checks.find((item) => item.id === "agent:synthesis-agent")?.status,
+      "ok",
+      "a later check remains ok after healing",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a CRLF file whose source changed warns and is refreshed to canonical bytes", async () => {
+  const fixture = makeFixture({ packageRootCopy: true });
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    writeFileSync(target, withCrlf(readFileSync(target, "utf8")), "utf8");
+
+    const source = join(fixture.packageRoot, "agents", "synthesis_agent.md");
+    writeFileSync(source, `${readFileSync(source, "utf8")}\n<!-- source update -->\n`, "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "warn");
+    assert.match(check?.detail ?? "", /differs in instructions/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.equal(updated.retained.includes("agents.synthesis-agent"), false);
+    const after = readFileSync(target, "utf8");
+    assert.match(after, /<!-- source update -->/);
+    assert.doesNotMatch(after, /\r/);
+    assert.equal(
+      agentRecord(first.manifestPath, "synthesis-agent").digest,
+      agentMarkdownDigest(after),
+    );
+
+    const again = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(again.ok, true, again.blockers.join("\n"));
+    assert.equal(again.changed, false, "a second update is a no-op");
+    const rechecked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    assert.equal(
+      rechecked.checks.find((item) => item.id === "agent:synthesis-agent")?.status,
+      "ok",
+      "a later check remains ok after refreshing the source",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an unowned CRLF duplicate is reused by update without a claim and survives uninstall", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const crlf = withCrlf(readFileSync(target, "utf8"));
+    writeFileSync(target, crlf, "utf8");
+    const agents = manifestAgents(first.manifestPath);
+    delete agents["synthesis-agent"];
+    writeManifestAgents(first.manifestPath, agents);
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    assert.equal(
+      checked.checks.find((item) => item.id === "agent:synthesis-agent")?.status,
+      "ok",
+    );
+
+    const reused = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(reused.ok, true, reused.blockers.join("\n"));
+    assert.equal(readFileSync(target, "utf8"), crlf, "an unowned file is never rewritten");
+    assert.equal(
+      manifestAgents(first.manifestPath)["synthesis-agent"],
+      undefined,
+      "update does not claim the unowned file",
+    );
+    assert.ok(
+      reused.operations.some(
+        (operation) => operation.kind === "reuse" && resolve(operation.target) === resolve(target),
+      ),
+    );
+
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.equal(readFileSync(target, "utf8"), crlf);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a CRLF file with a genuine edit is retained and never overwritten", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const edited = withCrlf(
+      readFileSync(target, "utf8").replace(/^description: .*$/m, "description: user-edited-description"),
+    );
+    writeFileSync(target, edited, "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "warn");
+    assert.match(check?.detail ?? "", /differs in frontmatter/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.ok(updated.retained.includes("agents.synthesis-agent"));
+    assert.equal(readFileSync(target, "utf8"), edited);
+    const record = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(record.retained, true);
+    assert.equal(record.digest, agentMarkdownDigest(edited));
+
+    const again = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.ok(again.retained.includes("agents.synthesis-agent"));
+    assert.equal(readFileSync(target, "utf8"), edited);
+
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.ok(removed.retained.includes("agents.synthesis-agent"));
+    assert.equal(readFileSync(target, "utf8"), edited);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("uninstall removes an owned CRLF file without a prior update", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    writeFileSync(target, withCrlf(readFileSync(target, "utf8")), "utf8");
+
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.equal(existsSync(target), false);
+    const stillRecorded =
+      existsSync(first.manifestPath) &&
+      manifestAgents(first.manifestPath)["synthesis-agent"] !== undefined;
+    assert.equal(stillRecorded, false, "the removed record is not left behind");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a retained record whose file was deleted restores the file on update", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const canonical = readFileSync(target, "utf8");
+    writeFileSync(
+      target,
+      canonical.replace(/^description: .*$/m, "description: user-edited-description"),
+      "utf8",
+    );
+    const retained = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(retained.ok, true, retained.blockers.join("\n"));
+    assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
+
+    rmSync(target);
+    const uninstalled = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(uninstalled.ok, true, uninstalled.blockers.join("\n"));
+    assert.ok(uninstalled.retained.includes("agents.synthesis-agent"));
+    assert.match(uninstalled.warnings.join("\n"), /ownership record is kept until update restores/);
+    assert.equal(
+      agentRecord(first.manifestPath, "synthesis-agent").retained,
+      true,
+      "uninstall must not drop a pathful retained record whose file is already missing",
+    );
+    assert.equal(
+      uninstalled.operations.some(
+        (operation) =>
+          operation.kind === "retain" &&
+          operation.target.endsWith("synthesis-agent.md") &&
+          /already missing/.test(operation.detail),
+      ),
+      true,
+    );
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const missing = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(missing?.status, "warn");
+    assert.match(missing?.detail ?? "", /retained/);
+    assert.match(missing?.detail ?? "", /update will restore/);
+    assert.doesNotMatch(missing?.detail ?? "", /not present:/);
+
+    // A manually re-added inline entry while the retained file is missing must
+    // not make `check` claim the inline definition is healthy: `update` stops
+    // on the retained record instead of restoring the file.
+    const configBeforeInline = JSON.parse(readFileSync(first.configPath, "utf8"));
+    writeFileSync(
+      first.configPath,
+      `${JSON.stringify(
+        {
+          ...configBeforeInline,
+          agents: {
+            ...(configBeforeInline.agents ?? {}),
+            "synthesis-agent": { system: "inline while the retained file is missing" },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const conflicted = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const conflict = conflicted.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(conflict?.status, "error");
+    assert.match(conflict?.detail ?? "", /retained/);
+    assert.match(conflict?.detail ?? "", /inline/);
+    assert.doesNotMatch(conflict?.detail ?? "", /or restore the file manually/);
+
+    const blockedUpdate = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(blockedUpdate.ok, false);
+    assert.match(blockedUpdate.blockers.join("\n"), /retained legacy inline/);
+    assert.doesNotMatch(
+      blockedUpdate.blockers.join("\n"),
+      /Restore the original inline value/,
+    );
+
+    // Restoring only the file leaves the definition twice; the error text
+    // must not send the user down that path.
+    writeFileSync(target, canonical, "utf8");
+    const dual = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const dualCheck = dual.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(dualCheck?.status, "error");
+    assert.match(dualCheck?.detail ?? "", /defined twice/);
+    rmSync(target);
+    const configAfterInline = JSON.parse(readFileSync(first.configPath, "utf8"));
+    delete configAfterInline.agents["synthesis-agent"];
+    writeFileSync(first.configPath, `${JSON.stringify(configAfterInline, null, 2)}\n`, "utf8");
+
+    const restored = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(restored.ok, true, restored.blockers.join("\n"));
+    assert.equal(readFileSync(target, "utf8"), canonical);
+    const record = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(record.retained, undefined);
+    assert.equal(record.digest, agentMarkdownDigest(canonical));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("uninstall retains a pathful retained record when its target is a directory", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    writeFileSync(target, `${readFileSync(target, "utf8")}\nuser edit\n`, "utf8");
+    const retained = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(retained.ok, true, retained.blockers.join("\n"));
+    rmSync(target);
+    mkdirSync(target);
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.ok(removed.retained.includes("agents.synthesis-agent"));
+    assert.match(removed.warnings.join("\n"), /is a directory/);
+    assert.ok(existsSync(target));
+    assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a body trailing-whitespace edit is warned about and never overwritten", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    const canonical = readFileSync(target, "utf8");
+    const edited = canonical.replace(/\n$/, "   \n");
+    assert.notEqual(edited, canonical);
+    writeFileSync(target, edited, "utf8");
+
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const check = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(check?.status, "warn");
+    assert.match(check?.detail ?? "", /matches the source semantically, but its bytes differ/);
+    assert.match(check?.detail ?? "", /update and uninstall will keep it/);
+
+    const updated = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.ok(updated.retained.includes("agents.synthesis-agent"));
+    assert.equal(readFileSync(target, "utf8"), edited);
+    assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
+
+    const checkedAfterRetain = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const retainedCheck = checkedAfterRetain.checks.find(
+      (item) => item.id === "agent:synthesis-agent",
+    );
+    assert.equal(retainedCheck?.status, "warn");
+    assert.match(retainedCheck?.detail ?? "", /retained/);
+    assert.match(retainedCheck?.detail ?? "", /update and uninstall keep it/);
+
+    const again = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(again.ok, true, again.blockers.join("\n"));
+    assert.ok(again.retained.includes("agents.synthesis-agent"));
+    assert.ok(
+      again.operations.some(
+        (operation) =>
+          operation.kind === "retain" &&
+          resolve(operation.target) === resolve(target),
+      ),
+      again.operations.map((operation) => `${operation.kind}:${operation.target}`).join("\n"),
+    );
+    assert.equal(readFileSync(target, "utf8"), edited);
+    const retainedRecord = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(retainedRecord.retained, true);
+    assert.equal(retainedRecord.digest, agentMarkdownDigest(edited));
+
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.ok(removed.retained.includes("agents.synthesis-agent"));
+    assert.equal(readFileSync(target, "utf8"), edited);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("uninstall reports a stale pre-Markdown record instead of dropping it silently", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    stripAgentPath(first.manifestPath, "synthesis-agent");
+
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.ok(
+      removed.warnings.some((warning) => /stale pre-Markdown ownership record/.test(warning)),
+      removed.warnings.join("\n"),
+    );
+    assert.ok(
+      removed.operations.some(
+        (operation) =>
+          operation.kind === "keep" && /no Markdown path was owned/.test(operation.detail),
+      ),
+    );
+    assert.equal(existsSync(target), true, "a pathless record never deletes a file");
+    const stillRecorded =
+      existsSync(first.manifestPath) &&
+      manifestAgents(first.manifestPath)["synthesis-agent"] !== undefined;
+    assert.equal(stillRecorded, false);
+  } finally {
     fixture.cleanup();
   }
 });

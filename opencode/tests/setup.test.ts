@@ -573,5 +573,41 @@ test("the preview fragment names the package, four agents and their permissions"
   assert.equal(Object.keys(fragment.agents).length, 4);
   assert.equal(fragment.agents["synthesis-agent"]?.mode, "subagent");
   assert.ok((fragment.agents["synthesis-agent"]?.permissions.length ?? 0) > 0);
-  assert.match(formatSetupReport(report), /Preview fragment/);
+  const text = formatSetupReport(report);
+  assert.doesNotMatch(text, /preview fragment/i);
+  assert.match(text, /opencode[\\/]install\.ts/);
+  assert.match(text, /--scope project/);
+  assert.ok(text.includes(repoRoot.replaceAll("\\", "/")), "the command names the actual project root");
+});
+
+test("setup status sends a Markdown install to the installer, not a manual merge", async () => {
+  const report = await planInstallation({
+    catalog,
+    projectRoot: repoRoot,
+    host: host({ agents: [] }),
+    adapter: {},
+  });
+  const text = formatSetupReport(report);
+  assert.doesNotMatch(text, /merge the preview fragment/i);
+  assert.doesNotMatch(text, /Legacy preview fragment/i);
+  assert.match(text, /opencode[\\/]install\.ts/);
+  assert.match(text, /--scope project/);
+  assert.match(text, /ars_opencode_status/);
+});
+
+test("setup report keeps configured model mappings in its installer command", async () => {
+  const report = await planInstallation({
+    catalog,
+    projectRoot: repoRoot,
+    host: host(),
+    adapter: {
+      models: {
+        aliases: { sonnet: { providerID: "probe", model: "probe-model" } },
+      },
+    },
+  });
+  const text = formatSetupReport(report);
+  assert.match(text, /--models '/);
+  assert.match(text, /"aliases"/);
+  assert.match(text, /probe-model/);
 });
