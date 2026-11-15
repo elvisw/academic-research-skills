@@ -2440,6 +2440,67 @@ test("a retained record whose file was deleted restores the file on update", asy
     assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
 
     rmSync(target);
+    const checked = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const missing = checked.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(missing?.status, "warn");
+    assert.match(missing?.detail ?? "", /retained/);
+    assert.match(missing?.detail ?? "", /update will restore/);
+    assert.doesNotMatch(missing?.detail ?? "", /not present:/);
+
+    // A manually re-added inline entry while the retained file is missing must
+    // not make `check` claim the inline definition is healthy: `update` stops
+    // on the retained record instead of restoring the file.
+    const configBeforeInline = JSON.parse(readFileSync(first.configPath, "utf8"));
+    writeFileSync(
+      first.configPath,
+      `${JSON.stringify(
+        {
+          ...configBeforeInline,
+          agents: {
+            ...(configBeforeInline.agents ?? {}),
+            "synthesis-agent": { system: "inline while the retained file is missing" },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    const conflicted = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const conflict = conflicted.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(conflict?.status, "error");
+    assert.match(conflict?.detail ?? "", /retained/);
+    assert.match(conflict?.detail ?? "", /inline/);
+    assert.doesNotMatch(conflict?.detail ?? "", /or restore the file manually/);
+
+    const blockedUpdate = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(blockedUpdate.ok, false);
+    assert.match(blockedUpdate.blockers.join("\n"), /retained legacy inline/);
+    assert.doesNotMatch(
+      blockedUpdate.blockers.join("\n"),
+      /Restore the original inline value/,
+    );
+
+    // Restoring only the file leaves the definition twice; the error text
+    // must not send the user down that path.
+    writeFileSync(target, canonical, "utf8");
+    const dual = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const dualCheck = dual.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(dualCheck?.status, "error");
+    assert.match(dualCheck?.detail ?? "", /defined twice/);
+    rmSync(target);
+    const configAfterInline = JSON.parse(readFileSync(first.configPath, "utf8"));
+    delete configAfterInline.agents["synthesis-agent"];
+    writeFileSync(first.configPath, `${JSON.stringify(configAfterInline, null, 2)}\n`, "utf8");
+
     const restored = await runInstaller(
       request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
     );
@@ -2479,6 +2540,34 @@ test("a body trailing-whitespace edit is warned about and never overwritten", as
     assert.ok(updated.retained.includes("agents.synthesis-agent"));
     assert.equal(readFileSync(target, "utf8"), edited);
     assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
+
+    const checkedAfterRetain = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "project" }),
+    );
+    const retainedCheck = checkedAfterRetain.checks.find(
+      (item) => item.id === "agent:synthesis-agent",
+    );
+    assert.equal(retainedCheck?.status, "warn");
+    assert.match(retainedCheck?.detail ?? "", /retained/);
+    assert.match(retainedCheck?.detail ?? "", /update and uninstall keep it/);
+
+    const again = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(again.ok, true, again.blockers.join("\n"));
+    assert.ok(again.retained.includes("agents.synthesis-agent"));
+    assert.ok(
+      again.operations.some(
+        (operation) =>
+          operation.kind === "retain" &&
+          resolve(operation.target) === resolve(target),
+      ),
+      again.operations.map((operation) => `${operation.kind}:${operation.target}`).join("\n"),
+    );
+    assert.equal(readFileSync(target, "utf8"), edited);
+    const retainedRecord = agentRecord(first.manifestPath, "synthesis-agent");
+    assert.equal(retainedRecord.retained, true);
+    assert.equal(retainedRecord.digest, agentMarkdownDigest(edited));
 
     const removed = await runInstaller(
       request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),

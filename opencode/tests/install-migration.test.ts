@@ -775,6 +775,76 @@ test("a retained pathless record with no file reports one manual action", async 
   }
 });
 
+test("a retained pathless record survives uninstall after its inline entry is removed", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    await crashAfterAgents(fixture);
+    const configPath = projectConfigPath(fixture);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.agents["synthesis-agent"].system = "user edited after the crash";
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const target = projectAgentPath(fixture, "synthesis-agent");
+
+    const first = await runInstaller(request(fixture, "plugin", "project", "uninstall"));
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    assert.ok(first.retained.includes("agents.synthesis-agent"));
+
+    const retainedWithInline = await runInstaller(
+      request(fixture, "plugin", "project", "uninstall"),
+    );
+    assert.equal(retainedWithInline.ok, true, retainedWithInline.blockers.join("\n"));
+    assert.ok(retainedWithInline.retained.includes("agents.synthesis-agent"));
+    assert.match(retainedWithInline.warnings.join("\n"), /retained pre-Markdown record/);
+    assert.match(retainedWithInline.warnings.join("\n"), /inline entry is left untouched/);
+    assert.match(retainedWithInline.warnings.join("\n"), /Remove the retained record from/);
+    assert.match(
+      retainedWithInline.operations.find(
+        (operation) =>
+          operation.kind === "retain" && operation.target === "agents.synthesis-agent",
+      )?.detail ?? "",
+      /update stays blocked/,
+    );
+
+    const configAfterFirst = JSON.parse(readFileSync(configPath, "utf8"));
+    delete configAfterFirst.agents["synthesis-agent"];
+    writeFileSync(configPath, `${JSON.stringify(configAfterFirst, null, 2)}\n`, "utf8");
+
+    const second = await runInstaller(request(fixture, "plugin", "project", "uninstall"));
+    assert.equal(second.ok, true, second.blockers.join("\n"));
+    assert.ok(second.retained.includes("agents.synthesis-agent"));
+    assert.ok(existsSync(target), "the retained Markdown file is left in place");
+    assert.ok(existsSync(manifestPathFor(fixture)), "the ownership manifest is kept");
+    const record = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8")).agents[
+      "synthesis-agent"
+    ];
+    assert.equal(record?.retained, true);
+    assert.ok(
+      second.operations.some(
+        (operation) =>
+          operation.kind === "retain" && operation.target === "agents.synthesis-agent",
+      ),
+      second.operations.map((operation) => `${operation.kind}:${operation.target}`).join("\n"),
+    );
+    assert.match(
+      second.warnings.join("\n"),
+      /retained pre-Markdown record; no inline entry remains/,
+    );
+    assert.match(second.warnings.join("\n"), /left in place/);
+    assert.match(second.warnings.join("\n"), /Remove the retained record from/);
+    assert.doesNotMatch(second.warnings.join("\n"), /Restore the inline value/);
+    assert.doesNotMatch(second.warnings.join("\n"), /stale pre-Markdown ownership record/);
+
+    rmSync(target);
+    const third = await runInstaller(request(fixture, "plugin", "project", "uninstall"));
+    assert.equal(third.ok, true, third.blockers.join("\n"));
+    assert.ok(third.retained.includes("agents.synthesis-agent"));
+    assert.match(third.warnings.join("\n"), /no Markdown file remains/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("uninstall reports a leftover Markdown file from a crashed pathless record", async () => {
   const fixture = makeFixture();
   try {

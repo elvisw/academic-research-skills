@@ -1530,10 +1530,10 @@ function planInlineAgent(
     state.blockers.push(
       !owned.path
         ? pathlessManualMessage(agent.id, paths, target, "retained")
-        : `agents.${agent.id} is a user-modified legacy inline entry; the whole migration ` +
-            "is stopped before any write. Restore the original inline value, or remove " +
-            `agents.${agent.id} from ${toPosix(paths.configPath)} and its ownership record from ` +
-            `${toPosix(paths.manifestPath)}; uninstall retains user-modified entries`,
+        : `agents.${agent.id} is a retained legacy inline entry; update stays blocked ` +
+            "before any write. Remove " +
+            `agents.${agent.id} from ${toPosix(paths.configPath)} and its retained ownership record from ` +
+            `${toPosix(paths.manifestPath)}; update then restores the Markdown file from source`,
     );
     return;
   }
@@ -1872,8 +1872,8 @@ function planPathlessFileRecovery(
 
 /**
  * Markdown ownership branch. The CRLF-folded digest decides whether this
- * installer may refresh the file; the semantic comparison decides whether a
- * retained record can be healed because the file matches the source again.
+ * installer may refresh the file; a semantic comparison never heals a retained
+ * record because it would erase the exact whitespace edit being preserved.
  */
 function planMarkdownAgent(
   plan: InstallPlan,
@@ -1937,9 +1937,11 @@ function planMarkdownAgent(
       });
       return;
     }
-    if (matchesSource) {
-      // The user's edit now matches the source again; the record no longer
-      // needs to pin their digest, and the file is healed to canonical bytes.
+    // Heal only a CRLF-only difference, never a semantic match: the latter
+    // erases trailing spaces and blank lines and would silently overwrite the
+    // exact edit this branch exists to preserve. The folded ownership digest
+    // equals the canonical digest when the bytes differ at most by line endings.
+    if (ownership.ownershipDigest === desiredDigest) {
       if (fileText !== content) {
         state.agentWrites.push({ id: agent.id, target, content, before: fileText });
       }
@@ -1948,7 +1950,7 @@ function planMarkdownAgent(
         kind: fileText === content ? "keep" : "update",
         target: toPosix(target),
         detail:
-          "previously retained user edit now matches the source; retained flag cleared" +
+          "previously retained user edit matches the source after line-ending folding; retained flag cleared" +
           (fileText === content ? "" : " and the file canonicalized"),
       });
       return;
@@ -3572,6 +3574,15 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
       );
       continue;
     }
+    if (owned?.path && owned.retained && current !== undefined && fileText === null) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "error",
+        `Markdown file ${toPosix(target)} is missing while agents.${agent.id} is still defined inline; the retained ownership record makes update stop. Remove the inline entry to let update restore the file; restoring the file while the inline entry remains still leaves two definitions`,
+      );
+      continue;
+    }
     if (current !== undefined && fileText !== null) {
       pushCheck(
         checks,
@@ -3651,6 +3662,28 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
           target,
           verdict.kind === "manual" ? verdict.reason : "file-missing",
         ),
+      );
+      continue;
+    }
+    if (ownership.status === "retained" && fileText === null) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "warn",
+        `Markdown file ${toPosix(target)} is missing, but its ownership record is retained from a user edit; update will restore it from source and clear the retained flag`,
+      );
+      continue;
+    }
+    if (
+      ownership.status === "retained" &&
+      fileText !== null &&
+      ownership.ownershipDigest !== agentMarkdownDigest(content)
+    ) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "warn",
+        `Markdown file ${toPosix(target)} is a retained user edit; update and uninstall keep it as a user edit. Restore the original source bytes to let update canonicalize it`,
       );
       continue;
     }
@@ -3914,6 +3947,36 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
       continue;
     }
     const current = agentRecord[id];
+    if (owned.retained) {
+      // The retained flag is authoritative for pathless records too. Do not
+      // let the absent inline value turn a retained record into a stale one
+      // and drop the only ownership trace of the Markdown file.
+      const leftover = agentFilePath(paths.agentsDir, id);
+      const hasLeftover = existsSync(leftover);
+      // Keep the record even when no file remains: it still documents the
+      // retained user edit, and the explicit manual path is the only safe way
+      // to retire it. The check/update pathless classifier also reports it as
+      // a manual retained state, so this warning must not suggest that an
+      // inline value would clear it.
+      warnings.push(
+        `agents.${id} is a retained pre-Markdown record; ` +
+          (current === undefined ? "no inline entry remains" : "the inline entry is left untouched") +
+          (hasLeftover
+            ? ` and the Markdown file ${toPosix(leftover)} is left in place`
+            : " and no Markdown file remains") +
+          `. Remove the retained record from ${toPosix(paths.manifestPath)} manually if it is no longer needed; update stays blocked until then`,
+      );
+      retained.push(`agents.${id}`);
+      operations.push({
+        kind: "retain",
+        target: `agents.${id}`,
+        detail:
+          current === undefined
+            ? "retained pre-Markdown record kept; no inline entry was removed"
+            : "retained pre-Markdown record kept; update stays blocked until the record is removed from the manifest",
+      });
+      continue;
+    }
     if (current === undefined) {
       if (!owned.path) {
         // A stale pre-Markdown record has no Markdown path, so this command
@@ -3932,15 +3995,6 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
         });
       }
       delete nextManifest.agents[id];
-      continue;
-    }
-    if (owned.retained) {
-      retained.push(`agents.${id}`);
-      operations.push({
-        kind: "retain",
-        target: `agents.${id}`,
-        detail: "user-modified entry kept; metadata retained for a later retry",
-      });
       continue;
     }
     if (digestValue(current) === owned.digest) {
