@@ -51,7 +51,10 @@ pass it explicitly when both scopes already have unrelated configs.
 `--models <json|file>` adds explicit model mappings for the plugin channel only;
 the skills channel keeps the source `inherit` model and rejects the option.
 `--adopt-legacy` is accepted by `install` and `update`, not by `check` or
-`uninstall`.
+`uninstall`. `--discard-crashed-agent <id>` is accepted only by `update` and may
+be repeated for distinct agent IDs; it is the explicit escape for a pathless
+crash-window Markdown file whose source changed after the crash. Without it,
+`update` keeps blocking and writes nothing.
 
 Exit codes: `0` success, `1` refused or failed checks, `2` usage error. `check`
 returns `1` when any check reports an error (for example Node below 24 or a
@@ -135,11 +138,21 @@ The install is conservative:
   that differs from the source, an inline value changed after installation, or a
   retained record, `check` reports an error and `update` blocks before any write
   with the same text; the file, inline value and record stay untouched. With no
-  file and no inline entry, the existing refusal remains: restore the inline
-  entry or remove the stale record. `uninstall` drops an unchanged pathless
-  record and warns either that no file was owned, or that the leftover Markdown
-  file at `agents/<id>.md` was left in place; a modified inline entry is
-  retained with its record.
+  file and no inline entry, restore the inline entry, remove the stale record,
+  or use the explicit flag below to recreate the file from the current source.
+  If the file differs because the source changed after the crash, or is
+  missing, `update --channel plugin --scope <project|global> --project <dir>
+  --discard-crashed-agent <id> --apply` explicitly replaces or recreates that
+  pathless, non-retained file from the current source and completes the
+  migration. The flag is repeatable for distinct IDs and
+  refuses retained records, modified inline values, pathful records, symlinked
+  targets and unknown IDs; it is accepted by `update` only. `uninstall` drops an
+  unchanged pathless record and warns either that no file was owned, or that the
+  leftover Markdown file at `agents/<id>.md` was left in place; a modified
+  inline entry is retained with its record. A pathful retained record whose file
+  is already missing also keeps its record with a retain warning; the next
+  update restores the file from source and clears `retained`. The shared
+  reviewer is the one exception when the other channel still owns it.
 - `update` migrates an unchanged owned pre-Markdown `agents.<id>` record:
   it writes the Markdown file first, then removes the inline value. A modified,
   retained or unowned differing inline entry stops the whole migration before

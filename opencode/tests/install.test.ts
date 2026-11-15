@@ -2114,6 +2114,7 @@ test("a stale pathless record without a file reports the same verdict and writes
     const verdict = check?.detail ?? "";
     assert.match(verdict, /no inline entry exists/);
     assert.match(verdict, /no Markdown file exists/);
+    assert.match(verdict, /--discard-crashed-agent synthesis-agent/);
 
     const updated = await runInstaller(
       request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
@@ -2123,6 +2124,29 @@ test("a stale pathless record without a file reports the same verdict and writes
     assert.equal(existsSync(target), false);
     assert.equal(readFileSync(first.manifestPath, "utf8"), manifestBefore);
     assert.equal(readFileSync(projectConfig(fixture), "utf8"), configBefore);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a discard recreates a missing pathless file from the current source", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    rmSync(target);
+    stripAgentPath(first.manifestPath, "synthesis-agent");
+
+    const updated = await runInstaller({
+      ...request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+      discardCrashedAgents: ["synthesis-agent"],
+    });
+    assert.equal(updated.ok, true, updated.blockers.join("\n"));
+    assert.ok(existsSync(target));
+    const after = JSON.parse(readFileSync(first.manifestPath, "utf8")).agents["synthesis-agent"];
+    assert.ok(after.path);
+    assert.equal(after.digest, agentMarkdownDigest(readFileSync(target, "utf8")));
   } finally {
     fixture.cleanup();
   }
@@ -2440,6 +2464,27 @@ test("a retained record whose file was deleted restores the file on update", asy
     assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
 
     rmSync(target);
+    const uninstalled = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(uninstalled.ok, true, uninstalled.blockers.join("\n"));
+    assert.ok(uninstalled.retained.includes("agents.synthesis-agent"));
+    assert.match(uninstalled.warnings.join("\n"), /ownership record is kept until update restores/);
+    assert.equal(
+      agentRecord(first.manifestPath, "synthesis-agent").retained,
+      true,
+      "uninstall must not drop a pathful retained record whose file is already missing",
+    );
+    assert.equal(
+      uninstalled.operations.some(
+        (operation) =>
+          operation.kind === "retain" &&
+          operation.target.endsWith("synthesis-agent.md") &&
+          /already missing/.test(operation.detail),
+      ),
+      true,
+    );
+
     const checked = await runInstaller(
       request(fixture, { action: "check", channel: "plugin", scope: "project" }),
     );
@@ -2509,6 +2554,32 @@ test("a retained record whose file was deleted restores the file on update", asy
     const record = agentRecord(first.manifestPath, "synthesis-agent");
     assert.equal(record.retained, undefined);
     assert.equal(record.digest, agentMarkdownDigest(canonical));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("uninstall retains a pathful retained record when its target is a directory", async () => {
+  const fixture = makeFixture();
+  try {
+    const first = await install(fixture, "plugin", "project", { apply: true });
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(agentsDir(fixture), "synthesis-agent.md");
+    writeFileSync(target, `${readFileSync(target, "utf8")}\nuser edit\n`, "utf8");
+    const retained = await runInstaller(
+      request(fixture, { action: "update", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(retained.ok, true, retained.blockers.join("\n"));
+    rmSync(target);
+    mkdirSync(target);
+    const removed = await runInstaller(
+      request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
+    );
+    assert.equal(removed.ok, true, removed.blockers.join("\n"));
+    assert.ok(removed.retained.includes("agents.synthesis-agent"));
+    assert.match(removed.warnings.join("\n"), /is a directory/);
+    assert.ok(existsSync(target));
+    assert.equal(agentRecord(first.manifestPath, "synthesis-agent").retained, true);
   } finally {
     fixture.cleanup();
   }

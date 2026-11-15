@@ -4,7 +4,7 @@
  *
  *   node install.ts install  --channel plugin|skills [--scope project|global] [--project DIR] [--models JSON|FILE] [--apply]
  *   node install.ts check    --channel plugin|skills [--scope project|global] [--project DIR] [--models JSON|FILE]
- *   node install.ts update   --channel plugin|skills [--scope project|global] [--project DIR] [--models JSON|FILE] [--apply] [--adopt-legacy]
+ *   node install.ts update   --channel plugin|skills [--scope project|global] [--project DIR] [--models JSON|FILE] [--apply] [--adopt-legacy] [--discard-crashed-agent ID]...
  *   node install.ts uninstall --channel plugin|skills [--scope project|global] [--project DIR] [--apply]
  *
  * Every mutating action previews by default. Only `--apply` writes, and only
@@ -49,6 +49,12 @@ Options:
                             Never required for identical pre-existing assets.
   --allow-checkout          Permit installing into the ARS checkout itself.
                             Adapter development only; refused by default.
+  --discard-crashed-agent ID
+                            Update only. Repeatable. Replace one pathless
+                            crash-window Markdown file whose source changed,
+                            and complete that migration from the current source.
+                            Refuses retained records and both modified inline
+                            and file states. Default update remains blocking.
   -h, --help                Show this help.
 
 Exit codes: 0 success, 1 refused or failed checks, 2 usage error.
@@ -68,6 +74,7 @@ interface ParsedArgs {
   apply: boolean;
   adoptLegacy: boolean;
   allowCheckout: boolean;
+  discardCrashedAgents: string[];
   help: boolean;
 }
 
@@ -82,6 +89,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     apply: false,
     adoptLegacy: false,
     allowCheckout: false,
+    discardCrashedAgents: [],
     help: false,
   };
   let action: InstallAction | undefined;
@@ -104,9 +112,12 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     const flag = equals === -1 ? raw : raw.slice(0, equals);
     const inline = equals === -1 ? undefined : raw.slice(equals + 1);
     const takeValue = (): string => {
-      if (inline !== undefined) return inline;
+      if (inline !== undefined) {
+        if (!inline.trim()) fail(`${flag} needs a value`);
+        return inline;
+      }
       const next = argv[index + 1];
-      if (next === undefined || next.startsWith("--") || next === "-h") {
+      if (next === undefined || next.startsWith("-")) {
         fail(`${flag} needs a value`);
       }
       index += 1;
@@ -160,6 +171,12 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         if (inline !== undefined) fail("--allow-checkout does not take a value");
         args.allowCheckout = true;
         break;
+      case "--discard-crashed-agent": {
+        const value = takeValue();
+        if (!value.trim()) fail("--discard-crashed-agent needs an agent id");
+        args.discardCrashedAgents.push(value);
+        break;
+      }
       default:
         fail(`unknown option ${JSON.stringify(flag)}`);
     }
@@ -176,6 +193,12 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   }
   if (args.adoptLegacy && (args.action === "check" || args.action === "uninstall")) {
     fail("--adopt-legacy is only accepted by install or update");
+  }
+  if (args.discardCrashedAgents.length && args.action !== "update") {
+    fail("--discard-crashed-agent is only accepted by update");
+  }
+  if (new Set(args.discardCrashedAgents).size !== args.discardCrashedAgents.length) {
+    fail("--discard-crashed-agent was given the same agent id more than once");
   }
   return args;
 }
@@ -218,6 +241,9 @@ async function main(argv: readonly string[]): Promise<number> {
       apply: parsed.apply,
       adoptLegacy: parsed.adoptLegacy,
       allowCheckout: parsed.allowCheckout,
+      discardCrashedAgents: parsed.discardCrashedAgents.length
+        ? parsed.discardCrashedAgents
+        : undefined,
     });
     console.log(formatInstallReport(report));
     return report.ok ? 0 : 1;

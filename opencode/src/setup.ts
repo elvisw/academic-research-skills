@@ -96,8 +96,10 @@ export interface InstallationCheck {
 export interface SetupReport {
   checks: InstallationCheck[];
   agents: NativeAgentSpec[];
+  /** Manual/status fragment; not printed by `formatSetupReport`. */
   fragment: Record<string, unknown>;
-  fragmentText: string;
+  /** Exact read-only diagnostic's suggested installer command. */
+  installCommand: string;
   ok: boolean;
 }
 
@@ -673,11 +675,18 @@ export async function planInstallation(options: {
     ),
   };
 
+  const modelOptions: Record<string, unknown> = {};
+  if (adapter.models?.agents) modelOptions.agents = adapter.models.agents;
+  if (adapter.models?.aliases) modelOptions.aliases = adapter.models.aliases;
+  if (adapter.screening?.roles) modelOptions.screening = { roles: adapter.screening.roles };
+  const modelsArgument = Object.keys(modelOptions).length
+    ? ` --models '${JSON.stringify(modelOptions)}'`
+    : "";
   return {
     checks,
     agents,
     fragment,
-    fragmentText: `${JSON.stringify(fragment, null, 2)}\n`,
+    installCommand: `node "${toPosix(join(packageRoot, "opencode", "install.ts"))}" install --channel plugin --scope project --project "${toPosix(projectRoot)}"${modelsArgument} --apply`,
     ok: checks.every((check) => check.status !== "error"),
   };
 }
@@ -687,7 +696,13 @@ export function formatSetupReport(report: SetupReport): string {
   for (const check of report.checks) {
     lines.push(`[${check.status}] ${check.id}: ${check.detail}`);
   }
-  lines.push("", "Legacy preview fragment (manual fallback only; never overwritten):", "");
-  lines.push(report.fragmentText.trimEnd());
+  lines.push(
+    "",
+    "This check is read-only. Install or update the Markdown agents with:",
+    "",
+    `  ${report.installCommand}`,
+    "",
+    "Use --scope global for a global install. The separate ars_opencode_status tool still returns per-agent fragments for manual inspection.",
+  );
   return lines.join("\n");
 }

@@ -31,12 +31,23 @@ How to update, uninstall, switch channels and move an installation without losin
   with the same manual action. A file or inline edit can be repaired by
   restoring the original bytes/value; a retained record cannot be cleared by
   restoring the inline value, so remove the inline entry and its ownership
-  record manually. Uninstall retains modified entries, so it is not a reset.
+  record manually. If the file differs because the ARS source changed after the
+  crash, the default `update` stays blocked; `update --channel plugin --scope
+  <project|global> --project <dir> --discard-crashed-agent <id> --apply`
+  explicitly replaces that pathless, non-retained file from the current source
+  and completes the migration. The flag is repeatable for distinct agent IDs,
+  refuses a modified inline value, a pathful record, a retained record, a
+  symlinked target or an unknown ID, and never runs with install, check or
+  uninstall. Uninstall retains modified entries, so it is not a reset.
 - **Uninstall:** `node "C:/work/academic-research-skills/opencode/install.ts" uninstall --channel <plugin|skills> --scope project --project "C:/research/my-project" --apply`.
   Only unchanged owned entries are removed. Modified agent files, skills and
   instruction files survive with their ownership records; a modified instruction
-  file is kept together with its `instructions` reference. Uninstall never
-  restores an old whole-config backup over later edits.
+  file is kept together with its `instructions` reference. A pathful retained
+  owner whose Markdown file is already missing keeps its ownership record and
+  gets a retain warning; the next `update` restores the file from source and
+  clears the retained flag, and can recreate the channel registration, so the
+  record is not a permanent user asset. Uninstall never restores an old
+  whole-config backup over later edits.
 - **Switch channels:** a second channel in the same scope is refused while the
   other channel's manifest owns the shared `screening-reviewer-agent`, because
   both would write the same Markdown path. Uninstall the first channel, then

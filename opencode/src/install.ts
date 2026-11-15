@@ -155,6 +155,8 @@ export interface InstallRequest {
   home?: string;
   env?: NodeJS.ProcessEnv;
   now?: Date;
+  /** Explicit `update --discard-crashed-agent <id>` request. */
+  discardCrashedAgents?: string[];
   /** Test-only fault injection; never used by the CLI. */
   testHooks?: {
     failAt?: "config" | "instructions" | "manifest" | "skills" | "agents" | "removal";
@@ -1407,6 +1409,44 @@ function otherChannelReviewerBlocker(
   }
 }
 
+interface AgentTargetState {
+  fileText: string | null;
+  fileIsSymlink: boolean;
+  fileIsDirectory: boolean;
+}
+
+/** Read an agent target without following a link or throwing on a directory. */
+function readAgentTarget(target: string): AgentTargetState {
+  let stats;
+  try {
+    stats = lstatSync(target);
+  } catch {
+    return { fileText: null, fileIsSymlink: false, fileIsDirectory: false };
+  }
+  if (stats.isSymbolicLink()) {
+    // Keep the pre-existing pathful behavior of reading through a link; the
+    // pathless classifier refuses it before any flag or recovery write. A
+    // dangling link has no readable text and stays visibly a symlink.
+    try {
+      return {
+        fileText: readFileSync(target, "utf8"),
+        fileIsSymlink: true,
+        fileIsDirectory: false,
+      };
+    } catch {
+      return { fileText: null, fileIsSymlink: true, fileIsDirectory: false };
+    }
+  }
+  if (stats.isDirectory()) {
+    return { fileText: null, fileIsSymlink: false, fileIsDirectory: true };
+  }
+  try {
+    return { fileText: readFileSync(target, "utf8"), fileIsSymlink: false, fileIsDirectory: false };
+  } catch (error) {
+    throw new InstallError(`could not read agent file ${toPosix(target)}: ${(error as Error).message}`);
+  }
+}
+
 function planAgentEntries(plan: InstallPlan): void {
   const { paths, manifest, desiredAgents, state } = plan;
   const agentsNode = getPath(plan.currentConfig, ["agents"]);
@@ -1415,6 +1455,18 @@ function planAgentEntries(plan: InstallPlan): void {
       ? (agentsNode as Record<string, unknown>)
       : {};
   const foreignInline = foreignScopeInlineAgents(paths, plan.request);
+  if (plan.request.discardCrashedAgents?.length) {
+    try {
+      if (lstatSync(paths.agentsDir).isSymbolicLink()) {
+        state.blockers.push(
+          `--discard-crashed-agent cannot write through the agent directory symlink ${toPosix(paths.agentsDir)}; move it aside first. Nothing was changed`,
+        );
+        return;
+      }
+    } catch {
+      // The directory does not exist yet; the normal planner creates it.
+    }
+  }
 
   for (const agent of desiredAgents) {
     const target = agentFilePath(paths.agentsDir, agent.id);
@@ -1422,9 +1474,10 @@ function planAgentEntries(plan: InstallPlan): void {
     const desiredDigest = agentMarkdownDigest(content);
     const current = currentAgents[agent.id];
     const owned = manifest?.agents[agent.id];
-    const fileText = existsSync(target) ? readFileSync(target, "utf8") : null;
-    const fileIsSymlink = fileText !== null && lstatSync(target).isSymbolicLink();
+    const targetState = readAgentTarget(target);
+    const { fileText, fileIsSymlink, fileIsDirectory } = targetState;
     const foreignPath = foreignInline.get(agent.id);
+    const discard = plan.request.discardCrashedAgents?.includes(agent.id) ?? false;
 
     if (foreignPath) {
       state.blockers.push(
@@ -1440,6 +1493,17 @@ function planAgentEntries(plan: InstallPlan): void {
       });
       continue;
     }
+    if (fileIsDirectory) {
+      state.blockers.push(
+        `agent ${agent.id} target ${toPosix(target)} is a directory; move it aside before installing. Nothing was written for this agent`,
+      );
+      state.operations.push({
+        kind: "blocked",
+        target: toPosix(target),
+        detail: "agent target is a directory",
+      });
+      continue;
+    }
 
     // The crash shape is exactly file + inline + pathless, which the generic
     // dual-form branch would misread as two owned definitions. Classify before
@@ -1452,8 +1516,28 @@ function planAgentEntries(plan: InstallPlan): void {
       fileIsSymlink,
       content,
       agentConfigValue(agent),
+      discard,
     );
+    if (discard && recovery.kind === "not-applicable") {
+      const reason = owned?.path
+        ? "the record already has a Markdown path, so the normal update/retain path applies"
+        : "no pathless interrupted-migration record was found for this id";
+      state.blockers.push(
+        `--discard-crashed-agent ${agent.id} cannot be used: ${reason}. Nothing was changed`,
+      );
+      state.operations.push({
+        kind: "blocked",
+        target: toPosix(target),
+        detail: `--discard-crashed-agent rejected: ${reason}`,
+      });
+      continue;
+    }
     if (recovery.kind === "recover") {
+      if (discard && !recovery.discard) {
+        state.warnings.push(
+          `--discard-crashed-agent ${agent.id} was not needed: the interrupted migration was already recoverable from the current source and no bytes were discarded`,
+        );
+      }
       planPathlessFileRecovery(plan, agent, {
         target,
         content,
@@ -1461,6 +1545,7 @@ function planAgentEntries(plan: InstallPlan): void {
         fileText,
         removeInline: recovery.removeInline,
         canonicalize: recovery.canonicalize,
+        discard: recovery.discard,
       });
       continue;
     }
@@ -1501,6 +1586,8 @@ function planAgentEntries(plan: InstallPlan): void {
       desiredDigest,
       owned,
       fileText,
+      fileIsSymlink,
+      fileIsDirectory,
     });
   }
 }
@@ -1669,6 +1756,8 @@ type PathlessRecoveryVerdict =
       inline: "absent" | "unchanged" | "desired";
       removeInline: boolean;
       canonicalize: boolean;
+      /** True only when `--discard-crashed-agent` explicitly replaced bytes. */
+      discard: boolean;
     }
   | {
       kind: "manual";
@@ -1689,6 +1778,7 @@ function classifyPathlessFileRecovery(
   fileIsSymlink: boolean,
   desiredContent: string,
   desiredInlineValue: Record<string, unknown>,
+  discard: boolean,
 ): PathlessRecoveryVerdict {
   if (!owned || owned.path) return { kind: "not-applicable" };
   // A retained record is never recovered automatically, with or without a
@@ -1696,31 +1786,47 @@ function classifyPathlessFileRecovery(
   // `update` on the same manual message when the user deleted the file.
   if (owned.retained) return { kind: "manual", reason: "retained" };
   if (fileIsSymlink) return { kind: "manual", reason: "file-symlink" };
+  const inlineModified =
+    current !== undefined &&
+    digestValue(current) !== owned.digest &&
+    !equivalentConfigValue(current, desiredInlineValue);
   if (fileText === null && current !== undefined) {
-    if (
-      digestValue(current) !== owned.digest &&
-      !equivalentConfigValue(current, desiredInlineValue)
-    ) {
+    if (inlineModified) {
       // An ordinary pre-Markdown inline install with no file yet. An edited
       // value is a manual state, not a reason for `check` and `update` to
       // print different refusals.
       return { kind: "manual", reason: "inline-modified-without-file" };
     }
-    // An unchanged ordinary inline install still belongs to the inline
-    // migration branch.
-    return { kind: "not-applicable" };
+    if (!discard) {
+      // An unchanged ordinary inline install still belongs to the inline
+      // migration branch.
+      return { kind: "not-applicable" };
+    }
+    return {
+      kind: "recover",
+      inline: digestValue(current) === owned.digest ? "unchanged" : "desired",
+      removeInline: true,
+      canonicalize: true,
+      discard: true,
+    };
   }
-  if (fileText === null) return { kind: "manual", reason: "file-missing" };
-  if (agentMarkdownOwnershipDigest(fileText) !== agentMarkdownDigest(desiredContent)) {
-    return { kind: "manual", reason: "file-modified" };
+  if (fileText === null) {
+    if (!discard) return { kind: "manual", reason: "file-missing" };
+    return {
+      kind: "recover",
+      inline: "absent",
+      removeInline: false,
+      canonicalize: true,
+      discard: true,
+    };
   }
-  if (
-    current !== undefined &&
-    digestValue(current) !== owned.digest &&
-    !equivalentConfigValue(current, desiredInlineValue)
-  ) {
-    return { kind: "manual", reason: "inline-modified" };
-  }
+  // Check the inline value before the file digest: a state with both a changed
+  // file and a changed inline value must name `inline-modified`, not the
+  // discard flag that would refuse it.
+  if (inlineModified) return { kind: "manual", reason: "inline-modified" };
+  const fileModified =
+    agentMarkdownOwnershipDigest(fileText) !== agentMarkdownDigest(desiredContent);
+  if (fileModified && !discard) return { kind: "manual", reason: "file-modified" };
   const inline =
     current === undefined
       ? "absent"
@@ -1731,7 +1837,8 @@ function classifyPathlessFileRecovery(
     kind: "recover",
     inline,
     removeInline: current !== undefined,
-    canonicalize: fileText !== desiredContent,
+    canonicalize: fileModified || fileText !== desiredContent,
+    discard: fileModified && discard,
   };
 }
 
@@ -1791,9 +1898,9 @@ function pathlessManualMessage(
       return (
         `${record}; the Markdown file ${file} differs from the current source, so ` +
         "the interrupted migration cannot be proven and nothing is overwritten. " +
-        `Restore the source text in ${file}, or move the file aside and restore the ` +
-        `inline entry in ${config}; removing the record would leave a file this ` +
-        "release must not reuse. Nothing was changed"
+        `Restore the source text in ${file}, or run update --discard-crashed-agent ${agentId} ` +
+        `--apply to replace the crashed file with the current source (this discards the file); ` +
+        "removing the record would leave a file this release must not reuse. Nothing was changed"
       );
     case "inline-modified":
       return (
@@ -1814,8 +1921,9 @@ function pathlessManualMessage(
     case "file-missing":
       return (
         `${record}, and no inline entry exists in ${config}; no Markdown file ` +
-        `exists at ${file} either. Restore the inline entry in ${config}, or remove ` +
-        `the stale ownership record from ${manifest}. Nothing was changed`
+        `exists at ${file} either. Restore the inline entry in ${config}, run ` +
+        `update --discard-crashed-agent ${agentId} --apply to recreate the file from ` +
+        `the current source, or remove the stale ownership record from ${manifest}. Nothing was changed`
       );
     case "file-symlink":
       return (
@@ -1843,10 +1951,11 @@ function planPathlessFileRecovery(
     fileText: string | null;
     removeInline: boolean;
     canonicalize: boolean;
+    discard: boolean;
   },
 ): void {
   const { paths, state } = plan;
-  const { target, content, desiredDigest, fileText, removeInline, canonicalize } = input;
+  const { target, content, desiredDigest, fileText, removeInline, canonicalize, discard } = input;
   if (removeInline) {
     state.configText = editConfigChecked(
       state.configText,
@@ -1866,7 +1975,10 @@ function planPathlessFileRecovery(
     detail:
       "interrupted migration completed: Markdown file adopted and canonical digest recorded" +
       (removeInline ? "; inline entry removed" : "") +
-      (canonicalize ? "; line endings canonicalized" : ""),
+      (canonicalize ? "; line endings canonicalized" : "") +
+      (discard
+        ? "; crashed file explicitly discarded and rewritten from the current source"
+        : ""),
   });
 }
 
@@ -1884,15 +1996,42 @@ function planMarkdownAgent(
     desiredDigest: string;
     owned: InstallManifestEntry | undefined;
     fileText: string | null;
+    fileIsSymlink: boolean;
+    fileIsDirectory: boolean;
   },
 ): void {
   const { paths, state } = plan;
-  const { target, content, desiredDigest, owned, fileText } = input;
+  const { target, content, desiredDigest, owned, fileText, fileIsSymlink, fileIsDirectory } =
+    input;
   const ownership = classifyMarkdownOwnership(owned, fileText);
-  const fileIsSymlink = fileText !== null && lstatSync(target).isSymbolicLink();
   const matchesSource =
     fileText !== null && markdownAgentDifferences(agent, fileText).length === 0;
   const label = `agents.${agent.id}`;
+
+  if (fileIsSymlink) {
+    state.blockers.push(
+      `${label} target ${toPosix(target)} is a symbolic link. The installer never follows or replaces a symlink. ` +
+        "Move the link aside and recreate a regular file; nothing was written for this agent",
+    );
+    state.operations.push({
+      kind: "blocked",
+      target: toPosix(target),
+      detail: "agent target is a symbolic link",
+    });
+    return;
+  }
+  if (fileIsDirectory) {
+    state.blockers.push(
+      `${label} target ${toPosix(target)} is a directory; move it aside before installing. ` +
+        "Nothing was written for this agent",
+    );
+    state.operations.push({
+      kind: "blocked",
+      target: toPosix(target),
+      detail: "agent target is a directory",
+    });
+    return;
+  }
 
   if (ownership.status === "stale") {
     // The pre-gate handles every pathless record with a file. This branch is
@@ -1905,6 +2044,7 @@ function planMarkdownAgent(
       fileIsSymlink,
       content,
       agentConfigValue(agent),
+      false,
     );
     state.blockers.push(
       pathlessManualMessage(
@@ -2569,6 +2709,21 @@ function inspectChannelSources(input: {
 }
 
 export async function runInstaller(request: InstallRequest): Promise<InstallReport> {
+  if (request.discardCrashedAgents !== undefined) {
+    if (!Array.isArray(request.discardCrashedAgents)) {
+      throw new InstallError("--discard-crashed-agent must be a list of agent ids");
+    }
+    const normalized = request.discardCrashedAgents.map((id) => {
+      if (typeof id !== "string" || !id.trim()) {
+        throw new InstallError("--discard-crashed-agent needs a non-empty agent id");
+      }
+      return id.trim();
+    });
+    if (new Set(normalized).size !== normalized.length) {
+      throw new InstallError("--discard-crashed-agent was given the same agent id more than once");
+    }
+    request = { ...request, discardCrashedAgents: normalized };
+  }
   const env = request.env ?? process.env;
   const packageRoot = request.packageRoot
     ? resolve(request.packageRoot)
@@ -2701,6 +2856,28 @@ export async function runInstaller(request: InstallRequest): Promise<InstallRepo
     warnings,
     operations,
   });
+
+  const discardCrashedAgents = request.discardCrashedAgents ?? [];
+  if (discardCrashedAgents.length) {
+    if (request.action !== "update") {
+      throw new InstallError(
+        "--discard-crashed-agent is only valid with update; it never applies to install, check or uninstall",
+      );
+    }
+    if (discardCrashedAgents.some((id) => !id.trim())) {
+      throw new InstallError("--discard-crashed-agent needs a non-empty agent id");
+    }
+    if (new Set(discardCrashedAgents).size !== discardCrashedAgents.length) {
+      throw new InstallError("--discard-crashed-agent was given the same agent id more than once");
+    }
+    const known = new Set(desiredAgents.map((agent) => agent.id));
+    const unknown = discardCrashedAgents.filter((id) => !known.has(id));
+    if (unknown.length) {
+      blockers.push(
+        `--discard-crashed-agent names an agent this installation does not own: ${unknown.join(", ")}. Nothing was changed`,
+      );
+    }
+  }
 
   if (request.action === "check") {
     return await checkInstallation({
@@ -3531,8 +3708,8 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
   for (const agent of desiredAgents) {
     const current = installedAgents[agent.id];
     const target = agentFilePath(paths.agentsDir, agent.id);
-    const fileText = existsSync(target) ? readFileSync(target, "utf8") : null;
-    const fileIsSymlink = fileText !== null && lstatSync(target).isSymbolicLink();
+    const targetState = readAgentTarget(target);
+    const { fileText, fileIsSymlink, fileIsDirectory } = targetState;
     const owned = manifest?.agents[agent.id];
     const foreignPath = foreignInline.get(agent.id);
     const content = renderAgentMarkdown(agent);
@@ -3545,9 +3722,28 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
       );
       continue;
     }
+    if (fileIsDirectory) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "error",
+        `target ${toPosix(target)} is a directory; move it aside before installing`,
+      );
+      continue;
+    }
+    if (fileIsSymlink && owned?.path) {
+      pushCheck(
+        checks,
+        `agent:${agent.id}`,
+        "error",
+        `target ${toPosix(target)} is a symbolic link; the installer never follows or replaces it. Move the link aside and recreate a regular file`,
+      );
+      continue;
+    }
     // Same classifier as `update`, before the dual-form branch: a crash after
     // the file write leaves file + inline + a pathless record, which is
-    // recoverable rather than two owned definitions.
+    // recoverable rather than two owned definitions. `check` never accepts the
+    // explicit discard flag, so it reports the manual action instead.
     const recovery = classifyPathlessFileRecovery(
       owned,
       current,
@@ -3555,6 +3751,7 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
       fileIsSymlink,
       content,
       agentConfigValue(agent),
+      false,
     );
     if (recovery.kind === "recover") {
       pushCheck(
@@ -3651,6 +3848,7 @@ async function checkInstallation(input: CheckInput): Promise<InstallReport> {
         fileIsSymlink,
         content,
         agentConfigValue(agent),
+        false,
       );
       pushCheck(
         checks,
@@ -3907,20 +4105,65 @@ async function uninstall(input: UninstallInput): Promise<InstallReport> {
       // This uninstall ends our claim but must not delete a file the other
       // channel owns. Drop our record so a later reinstall starts clean.
       delete nextManifest.agents[id];
+      const missing = Boolean(owned.path && !existsSync(owned.path));
+      if (owned.retained && owned.path && missing) {
+        warnings.push(
+          `retained record for ${id} is removed because the other channel still owns the shared reviewer; ` +
+            "the other channel remains responsible for the file. The pathful retained-file exception does not apply here",
+        );
+      }
       operations.push({
         kind: "retain",
         target: owned.path ? toPosix(owned.path) : `agents.${id}`,
-        detail: "the other channel still owns this reviewer; file left in place and our claim removed",
+        detail: `the other channel still owns this reviewer; ${
+          missing ? "the file is already missing" : "the file is left in place"
+        } and our claim is removed`,
       });
       continue;
     }
     if (owned.path) {
       if (!existsSync(owned.path)) {
+        if (owned.retained) {
+          // A retained file that the user already deleted is still a retained
+          // user record: keep the ownership trace and tell the user, instead of
+          // silently dropping it while `check` says update will restore it.
+          retained.push(`agents.${id}`);
+          operations.push({
+            kind: "retain",
+            target: toPosix(owned.path),
+            detail:
+              "retained Markdown file is already missing; ownership record kept for a later restore",
+          });
+          warnings.push(
+            `retained Markdown agent ${toPosix(owned.path)} is missing; the ownership record is kept until ` +
+              "update restores the file from source and clears the retained flag. A later update can also " +
+              "recreate the channel registration, so remove the record from " +
+              `${toPosix(paths.manifestPath)} manually if the installation should stay uninstalled`,
+          );
+          continue;
+        }
         // Already gone: nothing to remove or retain.
         delete nextManifest.agents[id];
         continue;
       }
-      const currentText = readFileSync(owned.path, "utf8");
+      const targetState = readAgentTarget(owned.path);
+      if (targetState.fileIsSymlink || targetState.fileIsDirectory) {
+        retained.push(`agents.${id}`);
+        operations.push({
+          kind: "retain",
+          target: toPosix(owned.path),
+          detail: targetState.fileIsDirectory
+            ? "agent target is a directory; ownership record preserved"
+            : "agent target is a symbolic link; ownership record preserved",
+        });
+        warnings.push(
+          `agents.${id} target ${toPosix(owned.path)} is ` +
+            (targetState.fileIsDirectory ? "a directory" : "a symbolic link") +
+            "; uninstall preserves the record and never follows or replaces the target",
+        );
+        continue;
+      }
+      const currentText = targetState.fileText ?? "";
       const ownership = classifyMarkdownOwnership(owned, currentText);
       // The CRLF-folded ownership digest decides whether the file is still the
       // one the installer wrote; `retained` stays authoritative, so a retained

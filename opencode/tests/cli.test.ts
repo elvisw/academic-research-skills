@@ -38,6 +38,21 @@ test("CLI usage errors exit 2", () => {
   }
 });
 
+test("CLI validates --discard-crashed-agent as an update-only repeatable ID", () => {
+  for (const args of [
+    ["check", "--channel", "plugin", "--discard-crashed-agent", "synthesis-agent"],
+    ["install", "--channel", "plugin", "--discard-crashed-agent", "synthesis-agent"],
+    ["uninstall", "--channel", "plugin", "--discard-crashed-agent", "synthesis-agent"],
+    ["update", "--channel", "plugin", "--discard-crashed-agent"],
+    ["update", "--channel", "plugin", "--discard-crashed-agent="],
+    ["update", "--channel", "plugin", "--discard-crashed-agent", "-x"],
+    ["update", "--channel", "plugin", "--discard-crashed-agent", "synthesis-agent", "--discard-crashed-agent", "synthesis-agent"],
+  ]) {
+    const result = run(args);
+    assert.equal(result.status, 2, `${args.join(" ")}\n${result.stderr}`);
+  }
+});
+
 test("CLI refuses an unsupported --models key with exit 1", () => {
   const result = run(["check", "--channel", "plugin", "--models", '{"x":1}']);
   assert.equal(result.status, 1);
