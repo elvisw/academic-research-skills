@@ -44,7 +44,13 @@ npm run test:host:agents
 
 The 2.3.0 agent gate in this repository ran under Node `26.13.1`; the
 binary path was supplied through `ARS_OPENCODE_BINARY`. This is separate from
-the 2.2.7 installation gate, which records Node `24.21.0` above.
+the 2.2.7 installation gate, which records Node `24.21.0` above. The 2.3.0 gate
+passes 3/3 (project and global Markdown agents). OpenCode 2.3.x runs plugins on
+Bun on Windows; Bun resolves `py`/`python` through the `WindowsApps` App
+Execution Aliases, which can start the Store installer or never close. The
+adapter strips that directory from child processes and `spawnBounded` resolves
+on timeout, so the guard probe cannot block plugin setup. Do not remove that
+child-environment handling without re-running `test:host:agents`.
 
 The suite runs files serially (`--test-concurrency=1`): the guard's Python
 discovery has a short timeout, and the heavy installer fixtures otherwise

@@ -17,12 +17,37 @@ import {
   WriteScopeGuard,
 } from "../src/guard.ts";
 import {
+  childEnvironment,
   discoverInterpreter,
   isolatedPythonEnv,
   runPythonFile,
+  spawnBounded,
 } from "../src/script-runner.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+test("Bun/Windows child PATH drops App Execution Alias stubs", () => {
+  const env = {
+    Path: String.raw`C:\Users\user\AppData\Local\Microsoft\WindowsApps;C:\Python\bin`,
+  };
+  const sanitized = childEnvironment(env, "win32", true);
+  assert.equal(sanitized.Path, String.raw`C:\Python\bin`);
+  assert.equal(sanitized.PATH, String.raw`C:\Python\bin`);
+  assert.equal(childEnvironment(env, "win32", false), env);
+  assert.equal(childEnvironment(env, "linux", true), env);
+});
+
+test("spawnBounded reports a timeout instead of hanging", async () => {
+  const result = await spawnBounded({
+    command: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1000)"],
+    cwd: tmpdir(),
+    env: process.env,
+    timeoutMs: 250,
+  });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.code, null);
+});
 
 test("guard output parser accepts only the source contract", () => {
   assert.deepEqual(
