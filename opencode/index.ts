@@ -775,8 +775,9 @@ export default Plugin.define({
                 "Native agents:",
                 ...NATIVE_ARS_AGENT_IDS.map((id) => `  - ${id}`),
                 "",
+                "New installs write these agents as Markdown (`agents/<id>.md`); this status tool never writes them.",
                 "A single fragment for all four agents would exceed the host's tool-output limit, so it is not returned as one bundle.",
-                "Call this tool once per agent with `agent=<id>` to get that agent's legacy inline preview (plugin entry plus one agents.<id> value). It is not a Markdown file; use the installer for a new Markdown install.",
+                "Call this tool once per agent with `agent=<id>` only to inspect a pre-Markdown inline install (plugin entry plus one agents.<id> value). It is not a Markdown file; do not merge it into a new install.",
               );
               return { content: lines.join("\n"), metadata };
             }

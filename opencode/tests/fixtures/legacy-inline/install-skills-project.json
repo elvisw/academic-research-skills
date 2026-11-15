@@ -2,6 +2,9 @@
   "channel": "skills",
   "scope": "project",
   "note": "Captured from the pre-change installer (cf7e77e); inline agents.<id> values and their ownership records. The checkout path is replaced with <package-root>.",
+  "pinnedDigests": {
+    "screening-reviewer-agent": "42c39198e7490639624dbecec468e72056138d8cec1b88b5efb1e6c306a46c69"
+  },
   "configAgents": {
     "screening-reviewer-agent": {
       "description": "Blinded screening reviewer for sr-screener: applies a confirmed protocol to one batch of records or one full-text report and returns one decision per record",

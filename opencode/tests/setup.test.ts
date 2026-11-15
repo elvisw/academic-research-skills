@@ -573,5 +573,18 @@ test("the preview fragment names the package, four agents and their permissions"
   assert.equal(Object.keys(fragment.agents).length, 4);
   assert.equal(fragment.agents["synthesis-agent"]?.mode, "subagent");
   assert.ok((fragment.agents["synthesis-agent"]?.permissions.length ?? 0) > 0);
-  assert.match(formatSetupReport(report), /Preview fragment/);
+  assert.match(formatSetupReport(report), /preview fragment/i);
+});
+
+test("setup status sends a Markdown install to the installer, not a manual merge", async () => {
+  const report = await planInstallation({
+    catalog,
+    projectRoot: repoRoot,
+    host: host({ agents: [] }),
+    adapter: {},
+  });
+  const text = formatSetupReport(report);
+  assert.doesNotMatch(text, /merge the preview fragment/i);
+  assert.match(text, /run the opencode installer/i);
+  assert.match(text, /Legacy preview fragment \(manual fallback only/i);
 });

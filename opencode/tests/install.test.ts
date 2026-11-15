@@ -1772,7 +1772,23 @@ test("an inline definition in the other scope is refused before a Markdown write
     );
     const global = await install(fixture, "plugin", "global", { apply: true });
     assert.equal(global.ok, false);
-    assert.match(global.blockers.join("\n"), /project scope/);
+    const globalMessage = global.blockers.join("\n");
+    assert.match(globalMessage, /project scope/);
+    assert.equal(
+      globalMessage.includes(fixture.project.replace(/\\/g, "/")),
+      true,
+      "global blocker names the current project",
+    );
+    const globalCheck = await runInstaller(
+      request(fixture, { action: "check", channel: "plugin", scope: "global" }),
+    );
+    const globalEntry = globalCheck.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(globalEntry?.status, "error");
+    assert.equal(
+      (globalEntry?.detail ?? "").includes(fixture.project.replace(/\\/g, "/")),
+      true,
+      "global check names the current project",
+    );
     assert.deepEqual(agentFileNames(fixture, "global"), []);
     assert.match(readFileSync(projectPath, "utf8"), /project inline/);
   } finally {

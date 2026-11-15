@@ -1507,8 +1507,9 @@ function planAgentEntries(plan: InstallPlan): void {
 
 /**
  * The pre-Markdown ownership branch: an inline `agents.<id>` entry already
- * exists. Story 1.2 migrates those records to files; until then this branch
- * keeps them correct and never writes a second form for the same agent.
+ * exists. `update` migrates owned records to files; this branch still keeps
+ * unowned, modified or retained inline values correct and never writes a
+ * second form for the same agent.
  */
 function planInlineAgent(
   plan: InstallPlan,

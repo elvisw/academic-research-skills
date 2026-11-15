@@ -141,7 +141,7 @@ test("skills preview writes no skills, instructions, config or state", async () 
   }
 });
 
-test("an owned inline agent survives via normalized equivalence but remains removable", async () => {
+test("an owned inline agent is migrated before uninstall removes it", async () => {
   const fixture = makeFixture();
   try {
     const first = await install(fixture, "plugin", "project");
@@ -181,6 +181,10 @@ test("an owned inline agent survives via normalized equivalence but remains remo
     );
     assert.equal(updated.ok, true, updated.blockers.join("\n"));
     assert.equal(updated.retained.includes("agents.synthesis-agent"), false);
+    const migrated = readJsonc(projectConfig(fixture));
+    assert.equal((migrated.agents as Record<string, unknown> | undefined)?.["synthesis-agent"], undefined);
+    const migratedFile = join(first.agentsDir, "synthesis-agent.md");
+    assert.equal(existsSync(migratedFile), true);
 
     const uninstalled = await runInstaller(
       request(fixture, { action: "uninstall", channel: "plugin", scope: "project", apply: true }),
@@ -188,6 +192,7 @@ test("an owned inline agent survives via normalized equivalence but remains remo
     assert.equal(uninstalled.ok, true, uninstalled.blockers.join("\n"));
     const after = readJsonc(projectConfig(fixture));
     assert.equal((after.agents as Record<string, unknown> | undefined)?.["synthesis-agent"], undefined);
+    assert.equal(existsSync(migratedFile), false);
   } finally {
     fixture.cleanup();
   }

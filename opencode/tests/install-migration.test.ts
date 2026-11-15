@@ -84,6 +84,18 @@ interface LegacyFixture {
   manifest: Record<string, unknown>;
 }
 
+function withoutAgents(config: Record<string, unknown>): Record<string, unknown> {
+  const { agents: _agents, ...rest } = config;
+  return rest;
+}
+
+function markdownBody(text: string): string {
+  const marker = "\n---\n\n";
+  const index = text.indexOf(marker);
+  assert.notEqual(index, -1, "Markdown frontmatter terminator");
+  return text.slice(index + marker.length);
+}
+
 function materialize(fixture: Fixture, channel: Channel, scope: Scope): LegacyFixture {
   // configAgents is the captured pre-Markdown state. manifestAgents digests are
   // intentionally null in the checked-in fixture: digestRule says to recompute
@@ -97,7 +109,20 @@ function materialize(fixture: Fixture, channel: Channel, scope: Scope): LegacyFi
     manifestFileName: string;
     stateRootRelative: string;
     digestRule: string;
+    pinnedDigests: Record<string, string>;
   };
+  // Pin the raw values before expand(): expanding <package-root> embeds this
+  // checkout's absolute path, so a literal over the expanded value would only
+  // pass on the machine that produced the fixture.
+  const pinned = source.pinnedDigests ?? {};
+  for (const [id, digest] of Object.entries(pinned)) {
+    assert.match(digest, /^[0-9a-f]{64}$/, `${id} pinned digest shape`);
+    assert.equal(
+      digestValue(source.configAgents[id]),
+      digest,
+      `${id} raw-placeholder digest`,
+    );
+  }
   const configAgents = expand(source.configAgents, fixture);
   const requestValue = request(fixture, channel, scope, "update");
   const paths = resolveScope(requestValue, repoRoot);
@@ -110,7 +135,11 @@ function materialize(fixture: Fixture, channel: Channel, scope: Scope): LegacyFi
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(
     configPath,
-    `${JSON.stringify({ $schema: "https://opencode.ai/config.json", agents: configAgents }, null, 2)}\n`,
+    `${JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      theme: "tokyonight",
+      agents: configAgents,
+    }, null, 2)}\n`,
     "utf8",
   );
   const manifest = expand(source.manifest, fixture) as Record<string, unknown>;
@@ -183,16 +212,25 @@ test("project plugin fixture: check, migrate, idempotence", async () => {
     assert.equal(updated.ok, true, updated.blockers.join("\n"));
     assert.equal(updated.applied, true);
     const config = JSON.parse(readFileSync(join(fixture.project, "opencode.json"), "utf8"));
+    const before = JSON.parse(beforeConfig);
+    // The installer may add its plugin entry; every key that existed before
+    // the migration must keep its exact value.
+    for (const [key, value] of Object.entries(withoutAgents(before))) {
+      assert.deepEqual(config[key], value, `config.${key} preserved`);
+    }
+    assert.equal(config.theme, "tokyonight");
     assert.deepEqual(Object.keys(config.agents ?? {}), []);
+    assert.equal(agentIds(legacy).length, 4);
     for (const id of agentIds(legacy)) {
       const target = join(fixture.project, ".opencode", "agents", `${id}.md`);
       assert.ok(existsSync(target), `${id} Markdown`);
       const text = readFileSync(target, "utf8").replace(/\r\n/g, "\n");
       const source = legacy.configAgents[id]!;
+      const expectedBody = String(source.system).replace(/\r\n/g, "\n");
       assert.equal(
-        text.includes(String(source.system).replace(/\r\n/g, "\n")),
-        true,
-        `${id} body preserved`,
+        markdownBody(text),
+        expectedBody.endsWith("\n") ? expectedBody : `${expectedBody}\n`,
+        `${id} body preserved exactly`,
       );
       assert.equal(text.includes(`description: `), true, `${id} description`);
       assert.equal(text.includes(String(source.description)), true, `${id} description value`);
@@ -218,6 +256,40 @@ test("project plugin fixture: check, migrate, idempotence", async () => {
     for (const id of agentIds(legacy)) {
       assert.equal(after.checks.find((item) => item.id === `agent:${id}`)?.status, "ok");
     }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("update recreates a migrated Markdown agent after deletion", async () => {
+  const fixture = makeFixture();
+  try {
+    materialize(fixture, "plugin", "project");
+    const first = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(first.ok, true, first.blockers.join("\n"));
+    const target = join(fixture.project, ".opencode", "agents", "synthesis-agent.md");
+    const bytesBefore = readFileSync(target, "utf8");
+    rmSync(target);
+
+    const check = await runInstaller(request(fixture, "plugin", "project", "check"));
+    const entry = check.checks.find((item) => item.id === "agent:synthesis-agent");
+    assert.equal(entry?.status, "warn");
+    assert.match(entry?.detail ?? "", /not present|missing|recreate|recreated/i);
+
+    const second = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(second.ok, true, second.blockers.join("\n"));
+    assert.equal(readFileSync(target, "utf8"), bytesBefore);
+    const manifest = JSON.parse(readFileSync(manifestPathFor(fixture), "utf8"));
+    assert.equal(
+      manifest.agents["synthesis-agent"].digest,
+      agentMarkdownDigest(bytesBefore),
+    );
+    const after = JSON.parse(readFileSync(projectConfigPath(fixture), "utf8"));
+    assert.deepEqual(Object.keys(after.agents ?? {}), []);
+
+    const third = await runInstaller(request(fixture, "plugin", "project", "update"));
+    assert.equal(third.ok, true, third.blockers.join("\n"));
+    assert.equal(third.changed, false);
   } finally {
     fixture.cleanup();
   }

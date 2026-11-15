@@ -2,6 +2,10 @@
   "channel": "plugin",
   "scope": "project",
   "note": "Captured from the pre-change installer (cf7e77e); inline agents.<id> values and their ownership records. The checkout path is replaced with <package-root>.",
+  "pinnedDigests": {
+    "screening-reviewer-agent": "42c39198e7490639624dbecec468e72056138d8cec1b88b5efb1e6c306a46c69",
+    "synthesis-agent": "9ab3ccace6da3e2b25f1cae42cee4eef0911fac76bb6072ad50232844c92389f"
+  },
   "configAgents": {
     "research-architect-agent": {
       "description": "Designs the methodological blueprint; selects research paradigm, method, data strategy, and analytical framework",

@@ -42,6 +42,14 @@ npm run test:host:install
 npm run test:host:agents
 ```
 
+The 2.3.0 agent gate in this repository ran under Node `26.13.1`; the
+binary path was supplied through `ARS_OPENCODE_BINARY`. This is separate from
+the 2.2.7 installation gate, which records Node `24.21.0` above.
+
+The suite runs files serially (`--test-concurrency=1`): the guard's Python
+discovery has a short timeout, and the heavy installer fixtures otherwise
+starve it on this Windows host.
+
 `npm test` runs the installer matrix: both channels at both scopes, JSONC
 comment/Unicode/secret preservation, preview/apply idempotence, model options,
 complete skill trees, managed instructions, modified-bundle retention, retirement

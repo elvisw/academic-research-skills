@@ -1,11 +1,11 @@
 /**
  * Installation planning and read-only verification.
  *
- * OpenCode V2 has no "add agent" API: native subagents come from configuration
- * (`agents.<id>` with `system`, `mode`, `permissions`). This module builds the
- * preview fragment for those agents and checks an installation without writing
- * anything. The user merges the fragment by hand; a collision is refused, never
- * overwritten.
+ * OpenCode V2 has no "add agent" API: native subagents come from either
+ * configuration (`agents.<id>`) or Markdown files under `agents/<id>.md`. This
+ * module builds the preview for either shape and checks an installation without
+ * writing anything. The installer writes Markdown; a collision is refused,
+ * never overwritten.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -496,8 +496,8 @@ export async function planInstallation(options: {
         "agent",
         options.strictAgents ? "error" : "warn",
         pluginRegistered
-          ? `agent ${agent.id} is not loaded in this host snapshot yet; run ars_opencode_status to verify the merged fragment`
-          : `agent ${agent.id} is not installed yet; merge the preview fragment after registration`,
+          ? `agent ${agent.id} is not loaded in this host snapshot yet; run ars_opencode_status to inspect the host`
+          : `agent ${agent.id} is not installed yet; run the opencode installer for this scope, then reload`,
       );
       continue;
     }
@@ -506,7 +506,7 @@ export async function planInstallation(options: {
       push(
         "agent-collision",
         "error",
-        `agent ${agent.id} is installed with different ${differences.join(", ")}; refusing to overwrite. Rename it or merge the fragment manually.`,
+        `agent ${agent.id} is installed with different ${differences.join(", ")}; refusing to overwrite. Rename it or reconcile that agent definition with the installer.`,
       );
     } else {
       push(
@@ -634,7 +634,7 @@ export async function planInstallation(options: {
     push(
       "registration",
       "warn",
-      `no config under ${toPosix(projectRoot)} or the global config lists ${toPosix(packagePath)}; install it with the preview fragment`,
+      `no config under ${toPosix(projectRoot)} or the global config lists ${toPosix(packagePath)}; run the opencode installer for this scope`,
     );
   }
 
@@ -687,7 +687,7 @@ export function formatSetupReport(report: SetupReport): string {
   for (const check of report.checks) {
     lines.push(`[${check.status}] ${check.id}: ${check.detail}`);
   }
-  lines.push("", "Preview fragment (merge manually; never overwritten):", "");
+  lines.push("", "Legacy preview fragment (manual fallback only; never overwritten):", "");
   lines.push(report.fragmentText.trimEnd());
   return lines.join("\n");
 }
