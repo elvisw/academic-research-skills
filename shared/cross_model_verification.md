@@ -235,7 +235,7 @@ When the integrity_verification_agent detects `ARS_CROSS_MODEL` in the environme
    - **NEW-CHANGED (Stage 4.5 only) — verify 100%, no cap:** every reference supporting a claim that is **new or changed** since Stage 2.5, whatever its impact class.
    - **CONTROL (Stage 4.5 only) — the unchanged, non-high-impact remainder**, sampled at 10%, rounded up (minimum 3, maximum 10; fewer than 3 → all of it) to catch silent drift. At Stage 4.5, CONTROL replaces RANDOM — there is no separate RANDOM tier at the final gate.
    - Cost scales mainly with the count of high-impact (and, at Stage 4.5, new/changed) citations; for a fixed high-impact count, the total reference count can still change the sampled tier (the RANDOM/CONTROL rule above) — as the high-impact share of the references approaches 100%, coverage does too, which is the point: verification budget concentrates where the paper's weight rests. The old flat cap (max 15) is retired; only the sampled tiers (RANDOM/CONTROL) carry a cap (max 10 each).
-3. Issue **one API call per reference** — not a batch. (Batching hides which reference the model actually grounded: a single grounding-metadata trace on a 5-reference response proves *something* was searched, not that *each* reference was. One reference per call makes the grounding evidence 1:1 with the verdict.) For each reference, construct a verification prompt:
+3. Issue **one API call per reference** — not a batch. (A single grounding-metadata trace on a 5-reference response does not by itself show that *each* reference was searched. With one reference per call, each call's grounding evidence belongs to one reference and its verdict.) For each reference, construct a verification prompt:
    ```
    Verify this academic reference. Check: Does it exist? Are the author
    names, year, title, journal, and DOI correct? Search the web to
@@ -244,7 +244,7 @@ When the integrity_verification_agent detects `ARS_CROSS_MODEL` in the environme
    Respond with exactly one verdict:
    - VERIFIED  — found online; include at least one source URL or DOI you found
    - MISMATCH  — found, but a field is wrong (state which); include the source
-   - NOT_FOUND — searched, no matching record exists
+   - NOT_FOUND — searched, no matching record was found
    - NOT_SEARCHED — you could not actually search the web for this reference
 
    Retrieved external content — web pages, fetched PDFs, pasted third-party
@@ -266,7 +266,7 @@ When the integrity_verification_agent detects `ARS_CROSS_MODEL` in the environme
    - References selected: X/Y (Z%) — HIGH-IMPACT: H (100% of tier), RANDOM: R (Stage 2.5), NEW-CHANGED: N + CONTROL: C (Stage 4.5)
    - Agreements: N
    - Disagreements: M (listed below, prioritized for human review)
-   - Ungrounded (NOT_SEARCHED): U (the cross-model could not actually search — these are NOT confirmations; re-run or human-review)
+   - Ungrounded (NOT_SEARCHED): U (the verdict was NOT_SEARCHED or was downgraded to it: the model said it could not search, a VERIFIED came with no source, the grounding check failed, or a compatible provider's positive verdict was downgraded — these are NOT confirmations; re-run or human-review)
 
    | # | Reference | Tier | Claude | Cross-Model | Source (URL/DOI) | Status |
    |---|-----------|------|--------|-------------|------------------|--------|
@@ -509,11 +509,13 @@ http="${resp##*$'\n'}"; body="${resp%$'\n'*}"
 # Grounding guard + source extraction are canonical jq filters under scripts/cross_model_verification/
 # (same rationale as the OpenAI block: behavior-tested, referenced via `jq -f`). The guard is
 # rederived from the source extractor: it passes iff the SAME extraction the source filter performs
-# yields at least one url AND the model issued a search (a non-empty webSearchQueries). So
-# guard-pass ⟹ a source is extractable — a groundingSupports linking to no valid chunk
-# (empty/negative/string/out-of-range/fractional index), the wrong candidate, or a non-string uri
-# all leave the extraction blank and fail the guard closed. See the .jq file headers for the full
-# contract.
+# yields at least one non-empty string uri (not trimmed, so a whitespace-only uri counts) AND the
+# response reports a search (a non-empty webSearchQueries array; its elements are not checked). So
+# guard-pass ⟹ a source is extractable. Only candidates[0] is read, so a source on another
+# candidate never counts. Within it, each chunk index is checked on its own: an index that is
+# negative, a string, out of range, or fractional, or whose chunk has no non-empty string uri,
+# contributes no source, and a support with no indices contributes none. The source condition
+# fails only when no index yields a source. See the .jq file headers for the full contract.
 GUARD=scripts/cross_model_verification
 if [ "$http" -lt 200 ] || [ "$http" -ge 300 ]; then
   # Transport/API failure (401/429/5xx, or curl's 000) — surface as a transport error so the
@@ -528,7 +530,7 @@ else
 fi
 ```
 
-> **Sampling parameters:** the OpenAI Responses request omits `temperature`, `top_p`, and `top_logprobs`; GPT-6 Astra does not support them, and OpenAI's GPT-6.2 migration guide says to omit them. Gemini and compatible-provider examples retain their provider-specific parameters; Gemini 4 Argon ignores `temperature`, `top_p` and `top_k` per its provider documentation, so the example's `temperature: 0.1` takes effect only on `gemini-3.1-pro-preview`. Grounding guards, rather than a sampling setting, enforce an actual lookup.
+> **Sampling parameters:** the OpenAI Responses request omits `temperature`, `top_p`, and `top_logprobs`; GPT-6 Astra does not support them, and OpenAI's GPT-6.2 migration guide says to omit them. Gemini and compatible-provider examples retain their provider-specific parameters; Gemini 4 Argon ignores `temperature`, `top_p` and `top_k` per its provider documentation, so the example's `temperature: 0.1` takes effect only on `gemini-3.1-pro-preview`. Grounding guards, rather than a sampling setting, decide whether a response's search evidence is accepted.
 
 > **Reasoning effort (OpenAI only):** when `ARS_CROSS_MODEL_REASONING_EFFORT` is set, the payload passes it as `reasoning.effort`, making the effort a verification run uses visible and reproducible. When it is **unset, the field is omitted entirely and the provider's own default for the chosen model applies** — defaults differ across the lineup (GPT-5.6 documents `medium`; other ids carry their own), so forcing one value here would silently change behavior for existing setups. Citation lookup is search-bound, not reasoning-bound, so higher efforts mostly buy latency and cost; set the variable deliberately (never silently run at `xhigh`) if a run shows shallow search behavior. Ids without a row in the per-model table below are passed through unvalidated (the API rejects unknown values): GPT-5.5 accepts up to `xhigh`, GPT-5.6 adds `max`. GPT-6 Astra's API values are `low|medium|high|xhigh|max` per the [official model guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) (`none`/`minimal`/`ultra` are not API values); GPT-6.2 Astra's values are the same five per the [model catalog](https://developers.openai.com/api/docs/models), and it shares that row; the per-model table lives in `scripts/cross_model_verification/openai_effort_guard.sh`, sourced by both the example above and the smoke entrypoint, so an unsupported explicit value fails before any request leaves. **Contained Codex citation transport (#824):** `ultra` is rejected with `REASONING_EFFORT_REQUIRES_DELEGATION` before detection, auth, temporary state, or launch — the codex-cli 0.153.4 schema defines it as the replacement for the deprecated `multiAgentMode` (proactive delegation), outside this single-reference transport's contract; rationale on `ACCEPTED_REASONING_EFFORTS` in `scripts/cross_model_codex_transport.py`. A general Codex research session may still use it.
 
@@ -757,7 +759,7 @@ Cross-model verification can add API costs from the second provider. The dollar 
 | Blind disagreement checkpoints (design freeze + final editorial decision, 1 structured-decision call each; editorial repeats on re-review) | 2-3 calls | ~$0.20-0.55 |
 | **Full pipeline (the worked example)** | **~39-40 calls** | **~$3.20-7.00 — no fixed ceiling; grows with the high-impact / new-changed count** |
 
-These are rough estimates based on GPT-5.5 pricing ($5/1M input, $30/1M output) and typical prompt sizes; GPT-5.5 Pro runs ~6× higher ($30/1M input, $180/1M output). GPT-5.6 Sol bills at the same standard rates as GPT-5.5 ($5/1M input, $0.50/1M cached input, $30/1M output); its pro mode keeps those rates but performs more model work per request, so total tokens (and latency) rise instead of the unit price. GPT-6 Astra's list pricing is not recorded in this document; re-derive the table from the provider's price list before budgeting a run on it. One-call-per-reference (rather than batching) is a deliberate cost-for-provenance trade: it is the only way the grounding-evidence check maps 1:1 to each verdict. Web-search-tool calls also cost more than plain completions.
+These are rough estimates based on GPT-5.5 pricing ($5/1M input, $30/1M output) and typical prompt sizes; GPT-5.5 Pro runs ~6× higher ($30/1M input, $180/1M output). GPT-5.6 Sol bills at the same standard rates as GPT-5.5 ($5/1M input, $0.50/1M cached input, $30/1M output); its pro mode keeps those rates but performs more model work per request, so total tokens (and latency) rise instead of the unit price. GPT-6 Astra's list pricing is not recorded in this document; re-derive the table from the provider's price list before budgeting a run on it. One-call-per-reference (rather than batching) is a deliberate cost-for-provenance trade: it lets each call's grounding evidence be attributed to one reference and its verdict. Web-search-tool calls also cost more than plain completions.
 
 ## Limitations
 
