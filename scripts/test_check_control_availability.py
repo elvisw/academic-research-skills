@@ -30,6 +30,7 @@ _MIRRORED_FILES = (
     "README.md",
     "audits/iso42001-spirit-gap-assessment-2026-08-17.md",
     "pi/README.md",
+    "opencode/README.md",
     "shared/cross_model_verification.md",
     "shared/contracts/degradation_registry.json",
     "shared/references/routing_core.md",
