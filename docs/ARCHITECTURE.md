@@ -319,18 +319,23 @@ exactly like the three tag-only workflows.
 | `changelog-covers-merges.yml` | PR targeting main; the job runs only when the head branch is `release/**` | every release-worthy merge since the last tag is documented in CHANGELOG | Blocking (ordinary merges rely on the manual CONTRIBUTING fallback) | none |
 | `platform-port-reminder.yml` | PR targeting main | new top-level directory → platform-ports policy reminder | Advisory (one `::warning::`, always exits 0; the merge decision stays with the maintainer) | none |
 | `freshness-check.yml` | weekly schedule + push (two-file path filter for branch pushes; **also every tag push**) + manual dispatch | PRISMA-trAIce snapshot staleness | Advisory for staleness (warns on stderr, exits 0); malformed protocol metadata is a hard failure | none |
+| `review-upstream-sync.yml` | manual dispatch on fork `main` only | optional, read-only OpenCode findings on the pinned upstream sync PR diff; no merge gate | Advisory | none |
 | `harness-retirement-monthly.yml` | monthly schedule + manual dispatch | opens the monthly prompt-debt audit issue | Administrative | none |
+| `sync-upstream.yml` | daily schedule + manual dispatch on fork `main` only | opens at most one upstream sync PR without updating `main` | Administrative | none |
 | `defer-label-gate.yml` | tag push `v*` | open `defer:<tag>` issues must be closed or relabelled | Post-push detection | `[skip-defer-check]` in the tagged commit message |
 | `release-cooldown.yml` | tag push `v*` | paces consecutive release tags | Post-push detection | `[skip-cooldown]` in the commit/tag message |
 | `tag-version-match.yml` | tag push `v*` | re-runs the full version-consistency lint at the tag | Post-push detection | none |
 
-Count, honestly stated: **14 workflows — 8 blocking on at least one event class, 2
-advisory, 1 administrative, 3 post-push detection.**
+Count, honestly stated: **16 workflows — 8 blocking on at least one event class, 3
+advisory, 2 administrative, 3 post-push detection.**
 
 Inventory sync, the count line, and the bypass tokens are pinned by
 `scripts/check_workflow_classification.py`; the class *semantics* — whether a row
 honestly describes its workflow's behavior — stay owned by code review, mirroring the
 degradation-registry posture.
+
+For the fork's sync and optional review procedures, see
+[Upstream sync and review](../opencode/docs/development.md#upstream-sync-and-review).
 
 ## 8. ARS Evolution Timeline
 

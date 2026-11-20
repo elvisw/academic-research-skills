@@ -1,0 +1,119 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'elvisw/academic-research-skills' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open a sync PR if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          import subprocess
+
+          fork = "elvisw/academic-research-skills"
+          upstream = "Imbad0202/academic-research-skills"
+          pulls = f"repos/{fork}/pulls"
+
+          def api(endpoint, *fields, method="GET"):
+              try:
+                  result = subprocess.run(
+                      ["gh", "api", "--include", "--method", method, endpoint, *fields],
+                      capture_output=True, text=True, encoding="utf-8", timeout=60,
+                  )
+              except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                  raise SystemExit(f"GitHub API request failed: {exc}") from None
+              headers, _, body = result.stdout.replace("\r\n", "\n").partition("\n\n")
+              status = re.match(r"HTTP/\S+ (\d{3})\b", headers)
+              if not status:
+                  raise SystemExit("GitHub API did not return an HTTP response; check the built-in token and retry.")
+              try:
+                  return int(status[1]), json.loads(body)
+              except ValueError:
+                  raise SystemExit(f"GitHub API returned HTTP {status[1]} with an unreadable response.") from None
+
+          def fail(operation, status, payload):
+              # Quote server diagnostics on one line; never emit them as Actions commands.
+              message = payload.get("message", "") if isinstance(payload, dict) else ""
+              errors = payload.get("errors", []) if isinstance(payload, dict) else []
+              detail = json.dumps({"message": message, "errors": errors}, ensure_ascii=True)[:2000]
+              raise SystemExit(f"{operation} failed (HTTP {status}): {detail}")
+
+          def canonical(pr):
+              try:
+                  return all(
+                      pr[side]["ref"] == "main"
+                      and (pr[side].get("repo") or {}).get("full_name", "").lower() == repo.lower()
+                      for side, repo in (("base", fork), ("head", upstream))
+                  )
+              except (AttributeError, KeyError, TypeError):
+                  return False
+
+          def find_open():
+              status, items = api(f"{pulls}?state=open&base=main&head=Imbad0202%3Amain")
+              if status != 200 or not isinstance(items, list):
+                  fail("List open sync PRs", status, items)
+              return next((pr for pr in items if isinstance(pr, dict) and pr.get("state") == "open" and canonical(pr)), None)
+
+          def report(action, pr):
+              print(f"{action}: https://github.com/{fork}/pull/{int(pr['number'])}")
+
+          status, comparison = api(f"repos/{fork}/compare/elvisw:main...Imbad0202:main?per_page=1")
+          if status != 200 or not isinstance(comparison, dict):
+              fail("Compare fork and upstream", status, comparison)
+          ahead = comparison.get("ahead_by")
+          if type(ahead) is not int or ahead < 0:
+              raise SystemExit("GitHub comparison did not return a valid ahead_by; no PR was created.")
+          if ahead == 0:
+              print("No upstream commits to sync.")
+              raise SystemExit(0)
+
+          existing = find_open()
+          if existing:
+              report("Sync PR already open", existing)
+              raise SystemExit(0)
+
+          status, created = api(
+              pulls, "-f", "head=Imbad0202:main", "-f", "base=main",
+              "-f", "title=Sync upstream main",
+              "-f", "body=Sync Imbad0202:main into this fork. Use **Create a merge commit**. "
+              "Optional: run **Review upstream sync** from fork main with this PR number.",
+              "-F", "maintainer_can_modify=false",
+              method="POST",
+          )
+          if status == 201 and isinstance(created, dict) and canonical(created):
+              report("Created sync PR (HTTP 201)", created)
+              raise SystemExit(0)
+
+          # Only the specific duplicate validation response may be recovered.
+          if status == 422 and isinstance(created, dict) and (
+              "pull request already exists" in str(created.get("message", "")).lower()
+              or any(
+                  "pull request already exists" in str(error.get("message", "")).lower()
+                  for error in (created.get("errors") or []) if isinstance(error, dict)
+              )
+          ):
+              existing = find_open()
+              if existing:
+                  report("Sync PR already open", existing)
+                  raise SystemExit(0)
+          fail("Create sync PR (check Actions PR creation and cross-fork source access)", status, created)
+          PY

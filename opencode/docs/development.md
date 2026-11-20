@@ -124,3 +124,59 @@ academic pipeline was run once (`/ars-full`, Stage 1–6); PDF export, Windows
 durable ledger, and Claude/Pi runtime regression remain recorded limits. The
 in-memory host in `tests/runtime.test.ts` proves callback behavior only; the
 direct host probes do not by themselves prove a model-driven workflow.
+
+## Upstream sync and review
+
+These workflows run only on `main` in `elvisw/academic-research-skills`.
+
+1. In **Actions → Sync upstream**, run the workflow from `main` or wait for the
+   daily run (05:23 UTC). The step log links to the new or existing sync PR
+   (titled `Sync upstream main`) when upstream has new commits. You can also
+   find it under **Pull requests** by matching `Imbad0202:main` → `elvisw:main`.
+   The job never updates `main`.
+2. Review the PR and select **Create a merge commit**. Do not squash or
+   rebase: those methods do not preserve the parent relationship used by
+   post-merge review. If there is a conflict, resolve it manually on a
+   fork-owned branch; do not push to upstream, use **Update branch** on the
+   canonical PR, or force sync. A separate conflict-resolution PR is outside
+   the AI workflow's scope; inspect its resolution manually.
+   Existing PR checks still run on a sync PR. Because an automated sync has no
+   tracking issue, the closes-issue gate may need its documented
+   `[skip-closes-check]` bypass with a justification; do not merge with failing
+   substantive checks. GitHub may hold checks from a `GITHUB_TOKEN`-created PR
+   for approval; when the PR shows **Approve workflows to run**, approve it so
+   the existing checks can run. This does not add a required gate.
+3. Optionally, in **Actions → Review upstream sync**, select `main` and enter
+   the canonical sync PR number (digits only). This is a paid DeepSeek call;
+   run only when authorized. In the run's **Summary**, check the recorded
+   SHAs, coverage limits, and advisory findings. For an open PR the comparison
+   is its captured merge base versus captured head; for a merged PR it is the
+   merge commit's first parent versus the merge commit, including manual merge
+   edits. The second parent must be the recorded PR head. Non-sync, closed
+   unmerged, squash/rebase, and mismatched merge commits are not reviewed.
+
+**One-time fork setup (requires authorization):**
+
+- Under **Settings → Actions → General → Workflow permissions**, enable
+  **Allow GitHub Actions to create and approve pull requests** without changing
+  the default token permissions. Actual reverse-PR creation must be confirmed
+  with the built-in fork token; the ability to compare branches is not proof
+  that GitHub will allow creation from the upstream source branch. If GitHub
+  refuses, report the API error; do not add credentials or a mirror branch.
+- Under **Settings → Environments**, create `upstream-review`. For
+  **Deployment branches and tags**, select **Selected branches and tags** and
+  add just the branch `main` (not a tag). Set up this restriction **before**
+  adding the `DEEPSEEK_API_KEY` environment secret. Do not create a repository
+  or organization secret of the same name or reuse another repository's
+  credential. No provider fallback is configured.
+
+Review is advisory, not an approval or required check. The pinned standalone
+OpenCode gets only the bounded UTF-8 diff file, never a checkout of the reviewed
+revision, its configuration, or the GitHub token. Binary and submodule contents
+are not reviewed. If the diff cannot be attached in full (including when it is
+larger than 1 MiB), the model is not run; inspect the exact revisions
+manually. Treat model output as unverified and keep the merge decision human.
+If OpenCode stops before finishing its reply (for example at its output limit),
+the run reports **Not reviewed** instead of publishing partial findings.
+
+Local offline workflow fixtures: `python3 -B .github/tests/upstream_sync_fixture.py`.
